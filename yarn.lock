@@ -2408,17 +2408,16 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@foxglove/rosbag@npm:0.1.2":
-  version: 0.1.2
-  resolution: "@foxglove/rosbag@npm:0.1.2"
+"@foxglove/rosbag@portal:/Users/roman/dev/github.com/foxglove/rosbag::locator=foxglove-studio%40workspace%3A.":
+  version: 0.0.0-use.local
+  resolution: "@foxglove/rosbag@portal:/Users/roman/dev/github.com/foxglove/rosbag::locator=foxglove-studio%40workspace%3A."
   dependencies:
     "@foxglove/rosmsg": ^2.0.0 || ^3.0.0
     "@foxglove/rosmsg-serialization": ^1.2.3
     "@foxglove/rostime": ^1.1.0
     heap: ^0.2.6
-  checksum: b8695f6df9b89f419910cb486931674abe75ce1036b78e13f3739884e84f40c83b89beada65a5a4ffa128464ce4dfe414c5ec3de059aeb7edc50ca316e316ff2
   languageName: node
-  linkType: hard
+  linkType: soft
 
 "@foxglove/rosmsg-msgs-common@npm:1.0.4, @foxglove/rosmsg-msgs-common@npm:^1.0.4":
   version: 1.0.4

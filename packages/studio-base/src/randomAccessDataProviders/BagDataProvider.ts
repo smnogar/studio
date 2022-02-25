@@ -307,6 +307,11 @@ export default class BagDataProvider implements RandomAccessDataProvider {
         },
       },
     };
+
+    // need an interface that can provide the _latest_ message less-than-or-equal to a time
+    // to build this I need the message index
+    // or the interface needs to support "lookback" where I give it a time and it gets the be messages
+
     try {
       await this._bag?.readMessages(options, onMessage);
     } catch (error) {

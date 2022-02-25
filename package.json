@@ -54,7 +54,8 @@
   "resolutions": {
     "@types/node": "15.3.0",
     "esbuild-loader/esbuild": "0.14.7",
-    "react-dnd": "14.0.2"
+    "react-dnd": "14.0.2",
+    "@foxglove/rosbag": "portal:/Users/roman/dev/github.com/foxglove/rosbag"
   },
   "devDependencies": {
     "@actions/core": "1.6.0",

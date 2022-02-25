@@ -6,11 +6,10 @@ import {
   IDataSourceFactory,
   DataSourceFactoryInitializeArgs,
 } from "@foxglove/studio-base/context/PlayerSelectionContext";
-import RandomAccessPlayer from "@foxglove/studio-base/players/RandomAccessPlayer";
+import BagPlayer from "@foxglove/studio-base/players/BagPlayer";
 import { Player } from "@foxglove/studio-base/players/types";
-import Ros1MemoryCacheDataProvider from "@foxglove/studio-base/randomAccessDataProviders/Ros1MemoryCacheDataProvider";
-import WorkerBagDataProvider from "@foxglove/studio-base/randomAccessDataProviders/WorkerBagDataProvider";
-import { getSeekToTime } from "@foxglove/studio-base/util/time";
+//import Ros1MemoryCacheDataProvider from "@foxglove/studio-base/randomAccessDataProviders/Ros1MemoryCacheDataProvider";
+//import WorkerBagDataProvider from "@foxglove/studio-base/randomAccessDataProviders/WorkerBagDataProvider";
 
 class Ros1LocalBagDataSourceFactory implements IDataSourceFactory {
   id = "ros1-local-bagfile";
@@ -25,15 +24,14 @@ class Ros1LocalBagDataSourceFactory implements IDataSourceFactory {
       return;
     }
 
-    const bagWorkerDataProvider = new WorkerBagDataProvider({ type: "file", file });
-    const messageCacheProvider = new Ros1MemoryCacheDataProvider(bagWorkerDataProvider, {
-      unlimitedCache: args.unlimitedMemoryCache,
-    });
+    //const bagWorkerDataProvider = new WorkerBagDataProvider({ type: "file", file });
+    //const messageCacheProvider = new Ros1MemoryCacheDataProvider(bagWorkerDataProvider, {
+    //  unlimitedCache: args.unlimitedMemoryCache,
+    //});
 
-    return new RandomAccessPlayer(messageCacheProvider, {
+    return new BagPlayer({
       metricsCollector: args.metricsCollector,
-      seekToTime: getSeekToTime(),
-      name: file.name,
+      file,
     });
   }
 }
