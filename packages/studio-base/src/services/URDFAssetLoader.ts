@@ -2,8 +2,10 @@
 // License, v2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/
 
+import { PNG } from "pngjs";
 import * as THREE from "three";
 import URDFLoader from "urdf-loader";
+import UTIF from "utif";
 import { XacroParser } from "xacro-parser";
 
 import Logger from "@foxglove/log";
@@ -13,10 +15,38 @@ import {
   parsePackageUrl,
   rewritePackageUrl,
 } from "@foxglove/studio-base/context/AssetsContext";
+import isDesktopApp from "@foxglove/studio-base/util/isDesktopApp";
 
 const log = Logger.getLogger(__filename);
 
 const URDF_ROOT = "$URDF_ROOT";
+
+class TiffLoader extends THREE.Loader {
+  constructor(manager: THREE.LoadingManager) {
+    super(manager);
+  }
+
+  override async loadAsync(url: string): Promise<HTMLImageElement> {
+    const image = document.createElement("img");
+
+    const res = await fetch(url);
+    const blob = await res.blob();
+    image.src = URL.createObjectURL(blob);
+
+    /*
+    const [ifd] = UTIF.decode(buf);
+        if (!ifd) {
+          throw new Error("TIFF decoding failed");
+        }
+        UTIF.decodeImage(buf, ifd);
+        const png = new PNG({ width: ifd.width, height: ifd.height });
+        png.data = Buffer.from(UTIF.toRGBA8(ifd));
+        const pngData = PNG.sync.write(png);
+        */
+
+    return image;
+  }
+}
 
 export default class URDFAssetLoader implements AssetLoader {
   async load(
@@ -34,17 +64,22 @@ export default class URDFAssetLoader implements AssetLoader {
     const xacroParser = new XacroParser();
     xacroParser.rospackCommands = {
       // Translate find commands to `package://` URLs, which makes the XacroParser treat them as
-      // absolute paths while allowing us to re-parse and translate these to
-      // x-foxglove-ros-package URLs later.
+      // absolute paths.
       find: (targetPkg) => `package://${targetPkg}`,
     };
     xacroParser.getFileContents = async (path: string) => {
+      console.error("get file content", path);
       // Given a fully formed package:// URL, translate it to something we can actually fetch.
       if (!parsePackageUrl(path)) {
         throw new Error(`Unable to get file contents for ${path}`);
       }
       const url = rewritePackageUrl(path, { basePath });
-      return await (await fetch(url)).text();
+      try {
+        return await (await fetch(url)).text();
+      } catch (err) {
+        console.error("erro", { err });
+        throw err;
+      }
     };
 
     const urdf = await xacroParser.parse(text);
@@ -54,34 +89,36 @@ export default class URDFAssetLoader implements AssetLoader {
     log.info("Parsing URDF", urdf);
 
     const manager = new THREE.LoadingManager();
-    manager.setURLModifier((url) => {
-      // TIFF images are not supported by Chrome. Use a custom protocol handler to locate and decode TIFFs.
-      if (/^x-foxglove-ros-package:.+\.tiff?$/i.test(url)) {
-        return url.replace(/^x-foxglove-ros-package:/, "x-foxglove-ros-package-converted-tiff:");
-      }
-      return url;
-    });
+
+    manager.addHandler(/\.tiff?$/i, new TiffLoader(manager));
 
     const loader = new URDFLoader(manager);
     const finishedLoading = new Promise<void>((resolve, reject) => {
       manager.onLoad = () => resolve();
-      manager.onError = (url) =>
-        reject(
-          new Error(
-            `Failed to load ${url}. Loading assets from ROS packages requires the ROS_PACKAGE_PATH environment variable to be set.`,
-          ),
-        );
+      manager.onError = (url) => {
+        if (/^package:\/\//.test(url)) {
+          if (!isDesktopApp()) {
+            reject(new Error("package:// urls require the desktop app."));
+            return;
+          }
+          reject(
+            new Error(
+              `Could not resolve ${url}. Check that you've set the ROS_PACKAGE_PATH environment variable or app setting.`,
+            ),
+          );
+          return;
+        }
+
+        reject(new Error(`Failed to load ${url}.`));
+      };
     });
 
-    // URDFLoader appends the resource path to the URL we give it. We include the ROS package name
-    // and the path of the URDF file so the protocol handler can look up the package location
-    // relative to the dropped URDF file.
+    // URDFLoader calls this function for every `package://` url it encounters.
+    // It provides the package name and will append the resource path to the return value of this function
+    // For the desktop app, we support `package://` urls so we re-make the `package://` url using
+    // the package name.
     loader.packages = (targetPkg: string) => {
-      let url = `x-foxglove-ros-package:?targetPkg=${encodeURIComponent(targetPkg)}`;
-      if (basePath != undefined) {
-        url += `&basePath=${encodeURIComponent(basePath)}`;
-      }
-      return url + `&relPath=`;
+      return `package://${targetPkg}`;
     };
 
     // If there are no nested assets to load, then the LoadingManager will never emit onLoad unless

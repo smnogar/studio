@@ -116,6 +116,7 @@ function MeshMarkers({ markers, loadModelOptions, layerIndex }: MeshMarkerProps)
     if (!mesh_resource) {
       continue;
     }
+    // fixme
     const url = rewritePackageUrl(mesh_resource, { rosPackagePath });
     const alpha = (color?.a ?? 0) > 0 ? color!.a : 1;
 

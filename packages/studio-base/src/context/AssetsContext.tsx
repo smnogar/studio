@@ -33,6 +33,7 @@ export interface AssetLoader {
 }
 
 /**
+ * fixme - remove this function
  * Rewrite ROS `package://` URLs as `x-foxglove-ros-package:` URLs. All other
  * URLs are returned unmodified.
  */
@@ -40,9 +41,12 @@ export function rewritePackageUrl(
   url: string,
   { basePath, rosPackagePath }: { basePath?: string; rosPackagePath?: string },
 ): string {
+  return url;
+
   if (!url) {
     return url;
   }
+  console.log("rewrite", url);
   const pkgMatch = parsePackageUrl(url);
   const basePathStr = basePath ? `&basePath=${encodeURIComponent(basePath)}` : "";
   const rosPackagePathStr = rosPackagePath

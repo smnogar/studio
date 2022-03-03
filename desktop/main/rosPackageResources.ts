@@ -5,12 +5,11 @@ import { DOMParser } from "@xmldom/xmldom";
 import { protocol } from "electron";
 import { promises as fs } from "fs";
 import path from "path";
-import { PNG } from "pngjs";
-import UTIF from "utif";
 
 import Logger from "@foxglove/log";
+import { AppSetting } from "@foxglove/studio-base/src/AppSetting";
 
-import pkgInfo from "../../package.json";
+import { getAppSetting } from "./settings";
 
 const log = Logger.getLogger(__filename);
 
@@ -134,39 +133,12 @@ export async function findRosPackageRoot(
   return undefined;
 }
 
-/** Translate a x-foxglove-ros-package: style URL to the actual resource path on disk. */
-async function findRosPackageResource(urlString: string): Promise<string> {
-  const url = new URL(urlString);
-  const params = new URLSearchParams(url.search);
-  const targetPkg = params.get("targetPkg");
-  const basePath = params.get("basePath");
-  const rosPackagePath = params.get("rosPackagePath");
-  const relPath = params.get("relPath");
-  if (targetPkg == undefined) {
-    throw new Error("ROS package URL missing targetPkg");
-  }
-  if (relPath == undefined) {
-    throw new Error("ROS package URL missing relPath");
-  }
-
-  const resourcePathParts = relPath.split("/");
-  const pkgRoot = await findRosPackageRoot(targetPkg, {
-    rosPackagePath: rosPackagePath ?? undefined,
-    searchPath: basePath ? path.dirname(basePath) : undefined,
-  });
-  if (pkgRoot == undefined) {
-    throw new Error(
-      `ROS package ${targetPkg} not found${
-        basePath != undefined ? ` relative to ${basePath}` : ""
-      }. Set the ROS_PACKAGE_PATH environment variable before launching ${pkgInfo.productName}.`,
-    );
-  }
-  return path.join(pkgRoot, ...resourcePathParts);
-}
+// https://source.chromium.org/chromium/chromium/src/+/master:net/base/net_error_list.h
+const NET_ERROR_FAILED = -2;
 
 /**
- * Register handlers for x-foxglove-ros-package: and x-foxglove-ros-package-converted-tiff:
- * protocols. These URLs contain parameters for the ROS package name, the resource name relative to
+ * Register handlers for package: protocol
+ * These URLs contain parameters for the ROS package name, the resource name relative to
  * the package root, and a search path (the path to the URDF file itself, when the file was dropped
  * in). We use the given search path and/or `env.ROS_PACKAGE_PATH` to locate the resource files.
  *
@@ -175,42 +147,41 @@ async function findRosPackageResource(urlString: string): Promise<string> {
  * their meshes.
  */
 export function registerRosPackageProtocolHandlers(): void {
-  protocol.registerFileProtocol("x-foxglove-ros-package", async (request, callback) => {
+  protocol.registerFileProtocol("package", async (request, callback) => {
     try {
-      const resPath = await findRosPackageResource(request.url);
-      callback({ path: resPath });
+      const rosPackagePath =
+        getAppSetting<string>(AppSetting.ROS_PACKAGE_PATH) ?? process.env.ROS_PACKAGE_PATH;
+
+      if (!rosPackagePath) {
+        throw new Error("ROS_PACKAGE_PATH not set");
+      }
+
+      const url = new URL(request.url);
+      const targetPkg = url.host;
+      const relPath = url.pathname;
+
+      const pkgRoot = await findRosPackageRoot(targetPkg, {
+        rosPackagePath,
+      });
+
+      if (!pkgRoot) {
+        throw new Error(
+          `ROS package ${targetPkg} not found in any ROS_PACKAGE_PATH: ${rosPackagePath}.`,
+        );
+      }
+
+      const resolvedResourcePath = path.join(pkgRoot, ...relPath.split("/"));
+      callback({ path: resolvedResourcePath });
     } catch (err) {
-      log.warn("Error loading from ROS package url", request.url, err);
-      callback({ error: 404 });
+      log.error(err);
+      callback({ error: NET_ERROR_FAILED });
     }
   });
-
-  protocol.registerBufferProtocol(
-    "x-foxglove-ros-package-converted-tiff",
-    async (request, callback) => {
-      try {
-        const resPath = await findRosPackageResource(request.url);
-        const buf = await fs.readFile(resPath);
-        const [ifd] = UTIF.decode(buf);
-        if (!ifd) {
-          throw new Error("TIFF decoding failed");
-        }
-        UTIF.decodeImage(buf, ifd);
-        const png = new PNG({ width: ifd.width, height: ifd.height });
-        png.data = Buffer.from(UTIF.toRGBA8(ifd));
-        const pngData = PNG.sync.write(png);
-        callback({ mimeType: "image/png", data: pngData });
-      } catch (err) {
-        log.warn("Error loading from ROS package url", request.url, err);
-        callback({ error: 404 });
-      }
-    },
-  );
 }
 
 /** Enable fetch for custom URL schemes. */
 export function registerRosPackageProtocolSchemes(): void {
   protocol.registerSchemesAsPrivileged([
-    { scheme: "x-foxglove-ros-package", privileges: { supportFetchAPI: true } },
+    { scheme: "package", privileges: { supportFetchAPI: true } },
   ]);
 }
