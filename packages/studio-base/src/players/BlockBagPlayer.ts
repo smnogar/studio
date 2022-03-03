@@ -62,8 +62,8 @@ const SEEK_START_DELAY_MS = 100;
 // Messages are laid out in blocks with a fixed number of milliseconds.
 const MIN_MEM_CACHE_BLOCK_SIZE_NS = 0.1e9;
 
-// fixme - why not have each block be a fixed size rather than max blocks
-// Preloading algorithms get too slow when there are too many blocks. For very long bags, use longer
+// Original comment from webviz:
+// Preloading algorithms slow when there are too many blocks. For very long bags, use longer
 // blocks. Adaptive block sizing is simpler than using a tree structure for immutable updates but
 // less flexible, so we may want to move away from a single-level block structure in the future.
 const MAX_BLOCKS = 400;
@@ -136,6 +136,7 @@ export default class BlockBagPlayer implements Player {
   private _closed: boolean = false;
   private _readersByConnectionId = new Map<number, LazyMessageReader>();
   private _topicsByConnectionId = new Map<number, string>();
+  // fixme - should not exist, we should be using the blocks to feed playback?
   private _forwardIterator?: ReturnType<Bag["forwardIterator"]>;
   private _lastMessage?: MessageEvent<unknown>;
   private _publishedTopics = new Map<string, Set<string>>();
@@ -643,7 +644,7 @@ export default class BlockBagPlayer implements Player {
       // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       if (this._nextState || !this._isPlaying) {
         this._lastMessage = event;
-        break;
+        return;
       }
 
       // The message is past the end time, we need to save it for next tick
@@ -654,11 +655,6 @@ export default class BlockBagPlayer implements Player {
 
       messages.push(event);
     }
-
-    // fixme - if seeking, then don't emit state, seeking will handle
-
-    // if we paused while reading then do not emit messages?
-    // we've already consumed the messages tho! so we need to keep them around
 
     this._currentTime = end;
     this._messages = messages;
@@ -677,6 +673,9 @@ export default class BlockBagPlayer implements Player {
         if (this._subscriptions !== subscriptions) {
           // Discard any last message event since the new iterator will repeat it
           this._lastMessage = undefined;
+
+          // fixme - iterator should be based on the blocks
+          //
 
           const topics = new Set(this._subscriptions.map((sub) => sub.topic));
           this._forwardIterator = this._bag?.forwardIterator({
