@@ -714,6 +714,12 @@ export default class BlockBagPlayer implements Player {
     console.log({ blockIndex: startBlockId });
     console.log("duration nanos", this._blockDurationNanos);
 
+    // start at the block for the current time
+    // work "out" from there, the blocks farthest from the current time block
+    // are the ones that we can evict from the cache
+    // the reasoning is that we might want to scrub back and forth around a window of time
+    // and thus need before and after to remain
+
     // fixme - start at the startBlockId, but go through all the blocks to make sure they are up to date
     for (let idx = startBlockId; idx < this._blocks.length; ++idx) {
       const existingBlock = this._blocks[idx];
@@ -739,6 +745,11 @@ export default class BlockBagPlayer implements Player {
       const messagesByTopic: Record<string, MessageEvent<unknown>[]> = {};
       let sizeInBytes = 0;
       for await (const messageData of iterator) {
+        // State change requested, bail
+        if (this._nextState) {
+          return;
+        }
+
         if (!messageData || !messageData.data) {
           continue;
         }
@@ -782,6 +793,11 @@ export default class BlockBagPlayer implements Player {
           startTime: this._start,
         },
       };
+
+      // State change requested, bail
+      if (this._nextState) {
+        return;
+      }
 
       // fixme - should we wait for this to finish rendering or do it in the background?
       // this is why there was a debounce - so loading could continue regardless of rendering
