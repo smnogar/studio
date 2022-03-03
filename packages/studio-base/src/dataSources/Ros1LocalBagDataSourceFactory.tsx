@@ -6,7 +6,7 @@ import {
   IDataSourceFactory,
   DataSourceFactoryInitializeArgs,
 } from "@foxglove/studio-base/context/PlayerSelectionContext";
-import BagPlayer from "@foxglove/studio-base/players/BagPlayer";
+import BlockBagPlayer from "@foxglove/studio-base/players/BlockBagPlayer";
 import { Player } from "@foxglove/studio-base/players/types";
 //import Ros1MemoryCacheDataProvider from "@foxglove/studio-base/randomAccessDataProviders/Ros1MemoryCacheDataProvider";
 //import WorkerBagDataProvider from "@foxglove/studio-base/randomAccessDataProviders/WorkerBagDataProvider";
@@ -29,7 +29,7 @@ class Ros1LocalBagDataSourceFactory implements IDataSourceFactory {
     //  unlimitedCache: args.unlimitedMemoryCache,
     //});
 
-    return new BagPlayer({
+    return new BlockBagPlayer({
       metricsCollector: args.metricsCollector,
       file,
     });

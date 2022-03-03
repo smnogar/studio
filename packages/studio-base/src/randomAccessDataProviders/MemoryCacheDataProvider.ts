@@ -56,20 +56,6 @@ export const MAX_BLOCK_SIZE_BYTES = 50e6; // Number of bytes in a block before w
 // See: https://github.com/foxglove/studio/pull/1733
 const DEFAULT_CACHE_SIZE_BYTES = 1.0e9;
 
-// For each memory block we store the actual messages (grouped by topic), and a total byte size of
-// the underlying ArrayBuffers.
-export type MemoryCacheBlock = {
-  readonly messagesByTopic: {
-    readonly [topic: string]: MessageEvent<unknown>[];
-  };
-  readonly sizeInBytes: number;
-};
-
-export type BlockCache = {
-  blocks: readonly (MemoryCacheBlock | undefined)[];
-  startTime: Time;
-};
-
 const EMPTY_BLOCK: MemoryCacheBlock = {
   messagesByTopic: {},
   sizeInBytes: 0,

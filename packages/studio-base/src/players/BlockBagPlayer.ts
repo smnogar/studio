@@ -45,6 +45,7 @@ import {
   PlayerPresence,
   PlayerProblem,
   PlayerCapabilities,
+  MessageBlock,
 } from "@foxglove/studio-base/players/types";
 import { RosDatatypes } from "@foxglove/studio-base/types/RosDatatypes";
 import { getBagChunksOverlapCount } from "@foxglove/studio-base/util/bags";
@@ -77,13 +78,6 @@ export type BlockBagPlayerOptions = {
   urlParams?: Record<string, string>;
 
   isSampleDataSource?: boolean;
-};
-
-type MessageBlock = {
-  readonly messagesByTopic: {
-    readonly [topic: string]: MessageEvent<unknown>[];
-  };
-  readonly sizeInBytes: number;
 };
 
 type BagPlayerState =
@@ -129,7 +123,7 @@ export default class BlockBagPlayer implements Player {
   private _metricsCollector: PlayerMetricsCollectorInterface;
   private _subscriptions: SubscribePayload[] = [];
 
-  private _progress: Progress = Object.freeze({});
+  private _progress: Progress = {};
   private _id: string = uuidv4();
   private _messages: MessageEvent<unknown>[] = [];
   private _receivedBytes: number = 0;
@@ -159,8 +153,8 @@ export default class BlockBagPlayer implements Player {
   private _blocks: (MessageBlock | undefined)[] = [];
   private _blockDurationNanos: number = 0;
 
-  // fixme - change to map of id -> array of functions
-  private _blockRequests: { blockId: number; resolve: (block: MessageBlock) => void }[] = [];
+  // Block requests waiting on specific block ids
+  private _blockRequestsByBlockId = new Map<number, ((block: MessageBlock) => void)[]>();
 
   constructor(options: BlockBagPlayerOptions) {
     const { metricsCollector, urlParams, file } = options;
@@ -290,10 +284,14 @@ export default class BlockBagPlayer implements Player {
       return;
     }
 
+    /*
     void this.startBlockLoad(this._start);
 
-    // how do we wait for the block to be loaded?
+    // fixme
+    // using block loading means we don't start playing data until the block is fully loaded
+    // thats annoying and we should be able to see data immediately
 
+    // how do we wait for the block to be loaded?
     // forward iterator can do this behind the scenes for us?
 
     const block = await new Promise<MessageBlock>((resolve) => {
@@ -302,11 +300,12 @@ export default class BlockBagPlayer implements Player {
 
       const existingBlock = this._blocks[blockIndex];
       if (!existingBlock) {
-        // wait for the block to be available
-        this._blockRequests.push({
-          blockId: blockIndex,
-          resolve,
-        });
+        const arr = this._blockRequestsByBlockId.get(blockIndex);
+        if (arr) {
+          arr.push(resolve);
+        } else {
+          this._blockRequestsByBlockId.set(blockIndex, [resolve]);
+        }
         return;
       }
 
@@ -339,11 +338,19 @@ export default class BlockBagPlayer implements Player {
     }
 
     events.sort((a, b) => compare(a.receiveTime, b.receiveTime));
+    */
 
-    /*
+    const topics = new Set(this._subscriptions.map((subscription) => subscription.topic));
+
     this._forwardIterator = this._bag.forwardIterator({
       topics: Array.from(topics),
     });
+
+    const stopTime = clampTime(
+      add(this._start, fromNanoSec(SEEK_ON_START_NS)),
+      this._start,
+      this._end,
+    );
 
     this._lastMessage = undefined;
 
@@ -371,10 +378,9 @@ export default class BlockBagPlayer implements Player {
 
       messageEvents.push(event);
     }
-    */
 
     this._currentTime = stopTime;
-    this._messages = events;
+    this._messages = messageEvents;
     await this._emitState();
     this._setState("idle");
   }
@@ -411,21 +417,19 @@ export default class BlockBagPlayer implements Player {
       }
     }
 
-    // Sort messages in increasing receiveTime order
-    messages.sort((a, b) => compare(a.receiveTime, b.receiveTime));
-
-    this._messages = messages;
-    this._currentTime = targetTime;
-
     // Our reverse iterators loaded the messages _at_ our seek time, so playback starts
     // at the next time.
     const forwardPosition = add(targetTime, { sec: 0, nsec: 1 });
-
     this._forwardIterator = this._bag.forwardIterator({
       topics: Array.from(topics),
       position: forwardPosition,
     });
 
+    // Sort messages in increasing receiveTime order
+    messages.sort((a, b) => compare(a.receiveTime, b.receiveTime));
+
+    this._messages = messages;
+    this._currentTime = targetTime;
     this._lastMessage = undefined;
     this._seekTarget = undefined;
     this._lastSeekEmitTime = Date.now();
@@ -472,6 +476,12 @@ export default class BlockBagPlayer implements Player {
             break;
           case "idle":
             await this._emitState();
+            if (this._currentTime) {
+              await this.startBlockLoad(this._currentTime);
+            } else {
+              // is this a good place to call start block load?
+              console.log("no current time");
+            }
             break;
           case "seek-backfill":
             await this._stateSeekBackfill();
@@ -700,10 +710,12 @@ export default class BlockBagPlayer implements Player {
     console.log({ topics });
     const timeNanos = Number(toNanoSec(subtractTimes(time, this._start)));
 
-    const blockIndex = Math.floor(timeNanos / this._blockDurationNanos);
-    console.log({ blockIndex });
+    const startBlockId = Math.floor(timeNanos / this._blockDurationNanos);
+    console.log({ blockIndex: startBlockId });
+    console.log("duration nanos", this._blockDurationNanos);
 
-    for (let idx = blockIndex; blockIndex < this._blocks.length; ++idx) {
+    // fixme - start at the startBlockId, but go through all the blocks to make sure they are up to date
+    for (let idx = startBlockId; idx < this._blocks.length; ++idx) {
       const existingBlock = this._blocks[idx];
       const blockTopics = existingBlock ? Object.keys(existingBlock.messagesByTopic) : [];
 
@@ -712,17 +724,12 @@ export default class BlockBagPlayer implements Player {
         topicsToFetch.delete(topic);
       }
 
-      console.log({ topicsToFetch });
-
       // This block has all the topics
       if (topicsToFetch.size === 0) {
         continue;
       }
 
-      const blockStartTime = add(
-        this._start,
-        fromNanoSec(BigInt(blockIndex * this._blockDurationNanos)),
-      );
+      const blockStartTime = add(this._start, fromNanoSec(BigInt(idx * this._blockDurationNanos)));
 
       const iterator = this._bag.forwardIterator({
         topics: Array.from(topics),
@@ -760,15 +767,25 @@ export default class BlockBagPlayer implements Player {
 
       this._blocks[idx] = block;
 
-      for (const req of this._blockRequests) {
-        if (req.blockId === idx) {
-          req.resolve(block);
-          const removeId = this._blockRequests.indexOf(req);
-          if (removeId >= 0) {
-            this._blockRequests.splice(removeId, 1);
+      for (const [blockId, resolves] of this._blockRequestsByBlockId) {
+        if (idx === blockId) {
+          this._blockRequestsByBlockId.delete(blockId);
+          for (const resolve of resolves) {
+            resolve(block);
           }
         }
       }
+
+      this._progress = {
+        messageCache: {
+          blocks: this._blocks,
+          startTime: this._start,
+        },
+      };
+
+      // fixme - should we wait for this to finish rendering or do it in the background?
+      // this is why there was a debounce - so loading could continue regardless of rendering
+      await this._emitState();
     }
   }
 
