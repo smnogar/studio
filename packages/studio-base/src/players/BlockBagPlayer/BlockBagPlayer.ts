@@ -10,6 +10,7 @@
 //   This source code is licensed under the Apache License, Version 2.0,
 //   found at http://www.apache.org/licenses/LICENSE-2.0
 //   You may not use this file except in compliance with the License.
+
 import { v4 as uuidv4 } from "uuid";
 import decompressLZ4 from "wasm-lz4";
 
@@ -18,10 +19,20 @@ import { Bag, MessageData } from "@foxglove/rosbag";
 import { BlobReader } from "@foxglove/rosbag/web";
 import { parse as parseMessageDefinition } from "@foxglove/rosmsg";
 import { LazyMessageReader } from "@foxglove/rosmsg-serialization";
-import { Time, add, compare, clampTime, fromMillis, fromNanoSec } from "@foxglove/rostime";
+import {
+  Time,
+  add,
+  compare,
+  clampTime,
+  fromMillis,
+  fromNanoSec,
+  toNanoSec,
+  subtract as subtractTimes,
+} from "@foxglove/rostime";
 import { MessageEvent } from "@foxglove/studio";
 import { ParameterValue } from "@foxglove/studio";
 import NoopMetricsCollector from "@foxglove/studio-base/players/NoopMetricsCollector";
+import PlayerProblemManager from "@foxglove/studio-base/players/PlayerProblemManager";
 import {
   AdvertiseOptions,
   Player,
@@ -33,8 +44,8 @@ import {
   Topic,
   ParsedMessageDefinitionsByTopic,
   PlayerPresence,
-  PlayerProblem,
   PlayerCapabilities,
+  MessageBlock,
 } from "@foxglove/studio-base/players/types";
 import { RosDatatypes } from "@foxglove/studio-base/types/RosDatatypes";
 import { getBagChunksOverlapCount } from "@foxglove/studio-base/util/bags";
@@ -44,11 +55,25 @@ import Bzip2 from "@foxglove/wasm-bz2";
 
 const log = Log.getLogger(__filename);
 
+// Number of bytes that we aim to keep in the cache.
+// Setting this to higher than 1.5GB caused the renderer process to crash on linux on certain bags.
+// See: https://github.com/foxglove/studio/pull/1733
+const DEFAULT_CACHE_SIZE_BYTES = 1.0e9;
+
 // Amount to wait until panels have had the chance to subscribe to topics before
 // we start playback
-export const SEEK_START_DELAY_MS = 100;
+const SEEK_START_DELAY_MS = 100;
 
-export type BagPlayerOptions = {
+// Messages are laid out in blocks with a fixed number of milliseconds.
+const MIN_MEM_CACHE_BLOCK_SIZE_NS = 0.1e9;
+
+// Original comment from webviz:
+// Preloading algorithms slow when there are too many blocks. For very long bags, use longer
+// blocks. Adaptive block sizing is simpler than using a tree structure for immutable updates but
+// less flexible, so we may want to move away from a single-level block structure in the future.
+const MAX_BLOCKS = 400;
+
+export type BlockBagPlayerOptions = {
   metricsCollector?: PlayerMetricsCollectorInterface;
 
   // Optional player name
@@ -70,7 +95,7 @@ type BagPlayerState =
   | "play";
 
 // A `Player` that wraps around a tree of `RandomAccessDataProviders`.
-export default class BagPlayer implements Player {
+export class BlockBagPlayer implements Player {
   private _urlParams?: Record<string, string>;
   private _name?: string;
   private _filePath?: string;
@@ -87,10 +112,7 @@ export default class BagPlayer implements Player {
   // next read start time indicates where to start reading for the next tick
   // after a tick read, it is set to 1nsec past the end of the read operation (preparing for the next tick)
   private _lastTickMillis?: number;
-  // This is the "lastSeekTime" emitted in the playerState. It is not the same as the _lastSeekStartTime because we can
-  // start a seek and not end up emitting it, or emit something else while we are requesting messages for the seek. The
-  // RandomAccessDataProvider's `progressCallback` can cause an emit at any time, for example.
-  // We only want to set the "lastSeekTime" exactly when we emit the messages coming from the seek.
+  // This is the "lastSeekTime" emitted in the playerState. This indicates the emit is due to a seek.
   private _lastSeekEmitTime: number = Date.now();
 
   private _providerTopics: Topic[] = [];
@@ -103,7 +125,7 @@ export default class BagPlayer implements Player {
   private _metricsCollector: PlayerMetricsCollectorInterface;
   private _subscriptions: SubscribePayload[] = [];
 
-  private _progress: Progress = Object.freeze({});
+  private _progress: Progress = {};
   private _id: string = uuidv4();
   private _messages: MessageEvent<unknown>[] = [];
   private _receivedBytes: number = 0;
@@ -125,12 +147,13 @@ export default class BagPlayer implements Player {
   // See additional comments below where _currentTime is set
   private _currentTime?: Time;
 
-  // The problem store holds problems based on keys (which may be hard-coded problem types or topics)
-  // The overall player may be healthy, but individual topics may have warnings or errors.
-  // These are set/cleared in the store to track the current set of problems
-  private _problems = new Map<string, PlayerProblem>();
+  private _problemManager = new PlayerProblemManager();
 
-  constructor(options: BagPlayerOptions) {
+  // Blocks is a sparse array of MessageBlock.
+  private _blocks: (MessageBlock | undefined)[] = [];
+  private _blockDurationNanos: number = 0;
+
+  constructor(options: BlockBagPlayerOptions) {
     const { metricsCollector, urlParams, file } = options;
 
     this._name = file.name;
@@ -142,7 +165,7 @@ export default class BagPlayer implements Player {
 
   private _setError(message: string, error?: Error): void {
     this._hasError = true;
-    this._problems.set("global-error", {
+    this._problemManager.addProblem("global-error", {
       severity: "error",
       message,
       error,
@@ -186,7 +209,7 @@ export default class BagPlayer implements Player {
       if (chunksOverlapCount > this._bag.chunkInfos.length * 0.25) {
         const message = `This bag has many overlapping chunks (${chunksOverlapCount} out of ${this._bag.chunkInfos.length}). This results in more memory use during playback.`;
         const tip = "Re-sort the messages in your bag by receive time.";
-        this._problems.set("unsorted", {
+        this._problemManager.addProblem("unsorted", {
           severity: "warn",
           message,
           tip,
@@ -196,6 +219,7 @@ export default class BagPlayer implements Player {
       this._start = this._currentTime = this._bag.startTime ?? { sec: 0, nsec: 0 };
       this._end = this._bag.endTime ?? { sec: 0, nsec: 0 };
 
+      // --- setup message readers for topics
       this._providerTopics = [];
       for (const [id, connection] of this._bag.connections) {
         const datatype = connection.type;
@@ -223,6 +247,18 @@ export default class BagPlayer implements Player {
         this._readersByConnectionId.set(id, reader);
         this._topicsByConnectionId.set(id, connection.topic);
       }
+
+      // --- setup blocks
+      const totalNs = Number(toNanoSec(subtractTimes(this._end, this._start))) + 1; // +1 since times are inclusive.
+      if (totalNs > Number.MAX_SAFE_INTEGER * 0.9) {
+        throw new Error("Time range is too long to be supported");
+      }
+
+      this._blockDurationNanos = Math.ceil(
+        Math.max(MIN_MEM_CACHE_BLOCK_SIZE_NS, totalNs / MAX_BLOCKS),
+      );
+      const blockCount = Math.ceil(totalNs / this._blockDurationNanos);
+      this._blocks = Array.from({ length: blockCount });
     } catch (error) {
       this._setError(`Error initializing bag: ${error.message}`, error);
     }
@@ -231,9 +267,9 @@ export default class BagPlayer implements Player {
     this._setState("start-delay");
   }
 
+  // Wait a bit until panels have had the chance to subscribe to topics before we start
+  // playback.
   private async _stateStartDelay() {
-    // Wait a bit until panels have had the chance to subscribe to topics before we start
-    // playback.
     await new Promise((resolve) => setTimeout(resolve, SEEK_START_DELAY_MS));
     if (this._closed || this._nextState) {
       return;
@@ -260,10 +296,12 @@ export default class BagPlayer implements Player {
     );
 
     this._lastMessage = undefined;
+    this._messages = [];
 
     const messageEvents: MessageEvent<unknown>[] = [];
     for await (const msg of this._forwardIterator) {
-      // Something requested a new state while we were loading
+      // Bail if a new state is requested while we are loading messages
+      // This usually happens when seeking before the initial load is complete
       if (this._nextState) {
         log.info("Exit startPlay for new state");
         return;
@@ -275,7 +313,6 @@ export default class BagPlayer implements Player {
 
       const event = this._messageDataToMessageEvent(msg);
       if (!event) {
-        // fixme - problem?
         continue;
       }
       if (compare(event.receiveTime, stopTime) > 0) {
@@ -324,31 +361,24 @@ export default class BagPlayer implements Player {
       }
     }
 
-    // Sort messages in increasing receiveTime order
-    messages.sort((a, b) => compare(a.receiveTime, b.receiveTime));
-
-    this._messages = messages;
-    this._currentTime = targetTime;
-
-    // Our reverse iterators loaded the messages _at_ our seek time, so playback starts
-    // at the next time.
+    // Our reverse iterators loaded the messages inclusive of the seek time, thus the next messages
+    // we read should be _after_ the seek time.
     const forwardPosition = add(targetTime, { sec: 0, nsec: 1 });
-
     this._forwardIterator = this._bag.forwardIterator({
       topics: Array.from(topics),
       position: forwardPosition,
     });
 
+    // Sort messages in increasing receiveTime order
+    messages.sort((a, b) => compare(a.receiveTime, b.receiveTime));
+
+    this._messages = messages;
+    this._currentTime = targetTime;
     this._lastMessage = undefined;
     this._seekTarget = undefined;
     this._lastSeekEmitTime = Date.now();
     await this._emitState();
-
-    if (this._isPlaying) {
-      this._setState("play");
-    } else {
-      this._setState("idle");
-    }
+    this._setState(this._isPlaying ? "play" : "idle");
   }
 
   private _setState(newState: BagPlayerState) {
@@ -385,6 +415,11 @@ export default class BagPlayer implements Player {
             break;
           case "idle":
             await this._emitState();
+            if (this._currentTime) {
+              const start = performance.now();
+              await this.startBlockLoad(this._currentTime);
+              log.info(`Block load took: ${performance.now() - start} ms`);
+            }
             break;
           case "seek-backfill":
             await this._stateSeekBackfill();
@@ -396,6 +431,8 @@ export default class BagPlayer implements Player {
 
         log.debug(`Done state ${state}`);
       }
+    } catch (err) {
+      this._setError((err as Error).message, err);
     } finally {
       this._runningState = false;
     }
@@ -415,7 +452,7 @@ export default class BagPlayer implements Player {
         capabilities: this._capabilities,
         playerId: this._id,
         activeData: undefined,
-        problems: Array.from(this._problems.values()),
+        problems: this._problemManager.problems(),
       });
     }
 
@@ -433,7 +470,7 @@ export default class BagPlayer implements Player {
       progress: this._progress,
       capabilities: this._capabilities,
       playerId: this._id,
-      problems: this._problems.size > 0 ? Array.from(this._problems.values()) : undefined,
+      problems: this._problemManager.problems(),
       activeData: {
         messages,
         totalBytesReceived: this._receivedBytes,
@@ -458,11 +495,21 @@ export default class BagPlayer implements Player {
   private _messageDataToMessageEvent(message: MessageData): MessageEvent<unknown> | undefined {
     const reader = this._readersByConnectionId.get(message.conn);
     if (!reader) {
+      this._problemManager.addProblem(`missingConnRecord-${message.conn}`, {
+        severity: "error",
+        message: `Cannot deserialize message for missing connection id ${message.conn}`,
+        tip: `Check that your bag file is well-formed. It should have a connection record for every connection id referenced from a message record.`,
+      });
       return undefined;
     }
 
     const topic = this._topicsByConnectionId.get(message.conn);
     if (!topic) {
+      this._problemManager.addProblem(`missingConnRecord-${message.conn}`, {
+        severity: "error",
+        message: `Missing connection id ${message.conn}`,
+        tip: `Check that your bag file is well-formed. It should have a connection record for every connection id referenced from a message record.`,
+      });
       return undefined;
     }
 
@@ -471,7 +518,6 @@ export default class BagPlayer implements Player {
     }
 
     const parsedMessage = reader.readMessage(message.data);
-
     const event: MessageEvent<unknown> = {
       topic,
       receiveTime: message.time,
@@ -488,7 +534,7 @@ export default class BagPlayer implements Player {
     }
 
     if (!this._forwardIterator) {
-      return;
+      throw new Error("Tried to play with no forward iterator");
     }
 
     // compute how long of a time range we want to read by taking into account
@@ -510,8 +556,7 @@ export default class BagPlayer implements Player {
     this._lastRangeMillis = rangeMillis;
 
     if (!this._currentTime) {
-      // fixme - problem?
-      return;
+      throw new Error("Tried to play with no current time.");
     }
 
     // The end time is our current time plus the range we want to read
@@ -527,12 +572,9 @@ export default class BagPlayer implements Player {
       this._lastMessage = undefined;
     }
 
-    // fixme - when we pause, should the last set of messages be emitted?
-
     for await (const message of this._forwardIterator) {
       if (!message) {
         // end of stream
-        console.log("end of stream...?");
         break;
       }
 
@@ -546,7 +588,7 @@ export default class BagPlayer implements Player {
       // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       if (this._nextState || !this._isPlaying) {
         this._lastMessage = event;
-        break;
+        return;
       }
 
       // The message is past the end time, we need to save it for next tick
@@ -557,11 +599,6 @@ export default class BagPlayer implements Player {
 
       messages.push(event);
     }
-
-    // fixme - if seeking, then don't emit state, seeking will handle
-
-    // if we paused while reading then do not emit messages?
-    // we've already consumed the messages tho! so we need to keep them around
 
     this._currentTime = end;
     this._messages = messages;
@@ -601,6 +638,172 @@ export default class BagPlayer implements Player {
     }
   }
 
+  private async startBlockLoad(time: Time) {
+    if (!this._bag) {
+      return;
+    }
+
+    log.info("Start block load", time);
+
+    const topics = new Set(this._subscriptions.map((subscription) => subscription.topic));
+    const timeNanos = Number(toNanoSec(subtractTimes(time, this._start)));
+
+    const startBlockId = Math.floor(timeNanos / this._blockDurationNanos);
+
+    // Block caching works on the assumption that we are more likely to want the blocks in proximity
+    // to the _time_. This includes blocks ahead and behind the time.
+    //
+    // We build a _loadQueue_ which is an array of block ids to load. The load queue is
+    // organized such that we populate blocks outward from the requested load time. Blocks closest
+    // to the load time are loaded and blocks furthest from the load time are eligible for eviction.
+    //
+    // To build the load queue, two arrays are created. Pre and Post. Pre contains block ids before
+    // the desired start block, and post ids after. For the load queue, we reverse pre and alternate
+    // selecting ids from post and pre.
+    //
+    // Example set of block ids: 0, 1, 2, 3, 4, 5, 6, 7
+    // Lets say id 2 is the startBlockId
+    // Reversed Pre: 1, 0
+    // Post: 3, 4, 5, 6, 7
+    //
+    // Load queue: 2, 3, 1, 4, 0, 5, 6, 7
+    //
+    // Block ID 2 is considered first for loading and block ID 7 is evictable
+    const preIds = [];
+    const postIds = [];
+    for (let idx = 0; idx < this._blocks.length; ++idx) {
+      if (idx < startBlockId) {
+        preIds.push(idx);
+      } else if (idx > startBlockId) {
+        postIds.push(idx);
+      }
+    }
+
+    preIds.reverse();
+
+    const loadQueue: number[] = [startBlockId];
+    while (preIds.length > 0 || postIds.length > 0) {
+      const postId = postIds.shift();
+      if (postId != undefined) {
+        loadQueue.push(postId);
+      }
+      const preId = preIds.shift();
+      if (preId != undefined) {
+        loadQueue.push(preId);
+      }
+    }
+
+    let totalBlockSizeBytes = this._blocks.reduce((prev, block) => {
+      if (!block) {
+        return prev;
+      }
+
+      return prev + block.sizeInBytes;
+    }, 0);
+
+    while (loadQueue.length > 0) {
+      const idx = loadQueue.shift();
+      if (idx == undefined) {
+        break;
+      }
+
+      const existingBlock = this._blocks[idx];
+      const blockTopics = existingBlock ? Object.keys(existingBlock.messagesByTopic) : [];
+
+      const topicsToFetch = new Set(topics);
+      for (const topic of blockTopics) {
+        topicsToFetch.delete(topic);
+      }
+
+      // This block has all the topics
+      if (topicsToFetch.size === 0) {
+        continue;
+      }
+
+      const blockStartTime = add(this._start, fromNanoSec(BigInt(idx * this._blockDurationNanos)));
+      const blockEndTime = add(blockStartTime, fromNanoSec(BigInt(this._blockDurationNanos)));
+
+      const iterator = this._bag.forwardIterator({
+        topics: Array.from(topics),
+        position: blockStartTime,
+      });
+
+      const messagesByTopic: Record<string, MessageEvent<unknown>[]> = {};
+      // Set all topic arrays to empty to indicate we've read this topic
+      for (const topic of topics) {
+        messagesByTopic[topic] = [];
+      }
+
+      let sizeInBytes = 0;
+      for await (const messageData of iterator) {
+        // State change requested, bail
+        if (this._nextState) {
+          return;
+        }
+
+        if (!messageData || !messageData.data) {
+          continue;
+        }
+
+        if (compare(messageData.time, blockEndTime) > 0) {
+          break;
+        }
+
+        const event = this._messageDataToMessageEvent(messageData);
+        if (!event) {
+          continue;
+        }
+
+        const events = messagesByTopic[event.topic]!;
+        const messageSizeInBytes = messageData.data.byteLength;
+        sizeInBytes += messageData.data.byteLength;
+
+        // Adding this message will exceed the cache size
+        // Evict blocks until we have enough size for the message
+        while (
+          loadQueue.length > 0 &&
+          totalBlockSizeBytes + messageSizeInBytes > DEFAULT_CACHE_SIZE_BYTES
+        ) {
+          const lastBlockIdx = loadQueue.pop();
+          if (lastBlockIdx != undefined) {
+            const lastBlock = this._blocks[lastBlockIdx];
+            this._blocks[lastBlockIdx] = undefined;
+            if (lastBlock) {
+              totalBlockSizeBytes -= lastBlock.sizeInBytes;
+              totalBlockSizeBytes = Math.max(0, totalBlockSizeBytes);
+            }
+          }
+        }
+
+        totalBlockSizeBytes += messageSizeInBytes;
+        events.push(event);
+      }
+
+      const block = {
+        messagesByTopic: {
+          ...existingBlock?.messagesByTopic,
+          ...messagesByTopic,
+        },
+        sizeInBytes: sizeInBytes + (existingBlock?.sizeInBytes ?? 0),
+      };
+
+      this._blocks[idx] = block;
+      this._progress = {
+        messageCache: {
+          blocks: this._blocks.slice(),
+          startTime: this._start,
+        },
+      };
+
+      // State change requested, bail
+      if (this._nextState) {
+        return;
+      }
+
+      await this._emitState();
+    }
+  }
+
   startPlayback(): void {
     if (this._isPlaying) {
       return;
@@ -636,7 +839,8 @@ export default class BagPlayer implements Player {
   }
 
   seekPlayback(time: Time): void {
-    // Only seek when the provider initialization is done.
+    // Seeking before initialization is complete is a no-op since we do not
+    // yet know the time range of the bag
     if (this._state === "preinit" || this._state === "initialize") {
       return;
     }
@@ -650,7 +854,8 @@ export default class BagPlayer implements Player {
     this._subscriptions = newSubscriptions;
     this._metricsCollector.setSubscriptions(newSubscriptions);
 
-    // if we are in seek backfill
+    // Once we are in an active state (i.e. done initializing), we use seeking to indicate
+    // that subscriptions have changed so restart our loading
     if (this._state === "idle" || this._state === "seek-backfill" || this._state === "play") {
       if (!this._isPlaying && this._currentTime) {
         this.seekPlayback(this._currentTime);
