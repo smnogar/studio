@@ -424,9 +424,15 @@ export class BlockBagPlayer implements Player {
           case "seek-backfill":
             await this._stateSeekBackfill();
             break;
-          case "play":
+          case "play": {
+            if (!this._currentTime) {
+              throw new Error("Tried to play before initialized");
+            }
+            const blockLoading = this.startBlockLoad(this._currentTime, { emit: false });
             await this._statePlay();
+            await blockLoading;
             break;
+          }
         }
 
         log.debug(`Done state ${state}`);
@@ -638,10 +644,16 @@ export class BlockBagPlayer implements Player {
     }
   }
 
-  private async startBlockLoad(time: Time) {
+  private async startBlockLoad(time: Time, opt?: { emit: boolean }) {
     if (!this._bag) {
       return;
     }
+
+    // During playback, we let the statePlay method emit state
+    // When idle, we can emit state
+    const shouldEmit = opt?.emit ?? true;
+
+    let nextEmit = 0;
 
     log.info("Start block load", time);
 
@@ -800,6 +812,16 @@ export class BlockBagPlayer implements Player {
         return;
       }
 
+      // We throttle emitting the state since we could be loading blocks
+      // faster than 60fps and it is actually slower to try rendering with each
+      // new block compared to spacing out the rendering.
+      if (shouldEmit && Date.now() >= nextEmit) {
+        await this._emitState();
+        nextEmit = Date.now() + 100;
+      }
+    }
+
+    if (shouldEmit) {
       await this._emitState();
     }
   }
