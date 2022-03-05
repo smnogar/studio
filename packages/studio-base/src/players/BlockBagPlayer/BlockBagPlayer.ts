@@ -15,7 +15,7 @@ import { v4 as uuidv4 } from "uuid";
 import decompressLZ4 from "wasm-lz4";
 
 import Log from "@foxglove/log";
-import { Bag, MessageData } from "@foxglove/rosbag";
+import { Bag, MessageData, Filelike } from "@foxglove/rosbag";
 import { BlobReader } from "@foxglove/rosbag/web";
 import { parse as parseMessageDefinition } from "@foxglove/rosmsg";
 import { LazyMessageReader } from "@foxglove/rosmsg-serialization";
@@ -48,6 +48,8 @@ import {
   MessageBlock,
 } from "@foxglove/studio-base/players/types";
 import { RosDatatypes } from "@foxglove/studio-base/types/RosDatatypes";
+import BrowserHttpReader from "@foxglove/studio-base/util/BrowserHttpReader";
+import CachedFilelike from "@foxglove/studio-base/util/CachedFilelike";
 import { getBagChunksOverlapCount } from "@foxglove/studio-base/util/bags";
 import delay from "@foxglove/studio-base/util/delay";
 import { SEEK_ON_START_NS, TimestampMethod } from "@foxglove/studio-base/util/time";
@@ -73,11 +75,15 @@ const MIN_MEM_CACHE_BLOCK_SIZE_NS = 0.1e9;
 // less flexible, so we may want to move away from a single-level block structure in the future.
 const MAX_BLOCKS = 400;
 
+type BagSource = { type: "file"; file: File } | { type: "remote"; url: string };
+
 export type BlockBagPlayerOptions = {
   metricsCollector?: PlayerMetricsCollectorInterface;
 
+  source: BagSource;
+
   // Optional player name
-  file: File;
+  name?: string;
 
   // Optional set of key/values to store with url handling
   urlParams?: Record<string, string>;
@@ -99,6 +105,7 @@ export class BlockBagPlayer implements Player {
   private _urlParams?: Record<string, string>;
   private _name?: string;
   private _filePath?: string;
+  private _source: BagSource;
   private _nextState?: BagPlayerState;
   private _state: BagPlayerState = "preinit";
   private _runningState: boolean = false;
@@ -134,7 +141,6 @@ export class BlockBagPlayer implements Player {
   private _lastRangeMillis?: number;
   private _parsedMessageDefinitionsByTopic: ParsedMessageDefinitionsByTopic = {};
   private _bag: Bag | undefined;
-  private _file: File;
   private _closed: boolean = false;
   private _readersByConnectionId = new Map<number, LazyMessageReader>();
   private _topicsByConnectionId = new Map<number, string>();
@@ -154,10 +160,10 @@ export class BlockBagPlayer implements Player {
   private _blockDurationNanos: number = 0;
 
   constructor(options: BlockBagPlayerOptions) {
-    const { metricsCollector, urlParams, file } = options;
+    const { metricsCollector, urlParams, source, name } = options;
 
-    this._name = file.name;
-    this._file = file;
+    this._source = source;
+    this._name = name;
     this._urlParams = urlParams;
     this._metricsCollector = metricsCollector ?? new NoopMetricsCollector();
     this._metricsCollector.playerConstructed();
@@ -189,7 +195,32 @@ export class BlockBagPlayer implements Player {
     const bzip2 = await Bzip2.init();
 
     try {
-      this._bag = new Bag(new BlobReader(this._file), {
+      let fileLike: Filelike | undefined;
+      if (this._source.type === "remote") {
+        const bagUrl = this._source.url;
+        const fileReader = new BrowserHttpReader(bagUrl);
+        const remoteReader = new CachedFilelike({
+          fileReader,
+          cacheSizeInBytes: 1024 * 1024 * 200, // 200MiB
+          keepReconnectingCallback: (_reconnecting) => {
+            // no-op?
+          },
+        });
+
+        // Call open on the remote reader to see if we can access the remote file
+        await remoteReader.open();
+
+        if (remoteReader.size() === 0) {
+          throw new Error("Cannot play bag file. File is 0 bytes in size.");
+        }
+
+        fileLike = remoteReader;
+      } else {
+        this._filePath = this._source.file.name;
+        fileLike = new BlobReader(this._source.file);
+      }
+
+      this._bag = new Bag(fileLike, {
         noParse: true,
         decompress: {
           bz2: (buffer: Uint8Array, size: number) => {
@@ -200,6 +231,7 @@ export class BlockBagPlayer implements Player {
           },
         },
       });
+
       await this._bag.open();
 
       const chunksOverlapCount = getBagChunksOverlapCount(this._bag.chunkInfos);
@@ -258,13 +290,17 @@ export class BlockBagPlayer implements Player {
         Math.max(MIN_MEM_CACHE_BLOCK_SIZE_NS, totalNs / MAX_BLOCKS),
       );
       const blockCount = Math.ceil(totalNs / this._blockDurationNanos);
+
       this._blocks = Array.from({ length: blockCount });
     } catch (error) {
       this._setError(`Error initializing bag: ${error.message}`, error);
     }
 
     await this._emitState();
-    this._setState("start-delay");
+
+    if (!this._hasError) {
+      this._setState("start-delay");
+    }
   }
 
   // Wait a bit until panels have had the chance to subscribe to topics before we start
@@ -280,7 +316,7 @@ export class BlockBagPlayer implements Player {
 
   private async _stateStartPlay() {
     if (!this._bag) {
-      return;
+      throw new Error("Cannot start without a bag instance");
     }
 
     const topics = new Set(this._subscriptions.map((subscription) => subscription.topic));
@@ -438,7 +474,9 @@ export class BlockBagPlayer implements Player {
         log.debug(`Done state ${state}`);
       }
     } catch (err) {
+      log.error(err);
       this._setError((err as Error).message, err);
+      await this._emitState();
     } finally {
       this._runningState = false;
     }
@@ -733,8 +771,10 @@ export class BlockBagPlayer implements Player {
       }
 
       const blockStartTime = add(this._start, fromNanoSec(BigInt(idx * this._blockDurationNanos)));
-      const blockEndTime = add(blockStartTime, fromNanoSec(BigInt(this._blockDurationNanos)));
+      const nextBlockStartTime = add(blockStartTime, fromNanoSec(BigInt(this._blockDurationNanos)));
 
+      // fixme - allow a max time for the iterator which could help it ignore
+      // chunks that we don't care about
       const iterator = this._bag.forwardIterator({
         topics: Array.from(topics),
         position: blockStartTime,
@@ -757,7 +797,7 @@ export class BlockBagPlayer implements Player {
           continue;
         }
 
-        if (compare(messageData.time, blockEndTime) > 0) {
+        if (compare(messageData.time, nextBlockStartTime) >= 0) {
           break;
         }
 

@@ -6,10 +6,7 @@ import {
   IDataSourceFactory,
   DataSourceFactoryInitializeArgs,
 } from "@foxglove/studio-base/context/PlayerSelectionContext";
-import RandomAccessPlayer from "@foxglove/studio-base/players/RandomAccessPlayer";
-import Ros1MemoryCacheDataProvider from "@foxglove/studio-base/randomAccessDataProviders/Ros1MemoryCacheDataProvider";
-import WorkerBagDataProvider from "@foxglove/studio-base/randomAccessDataProviders/WorkerBagDataProvider";
-import { getSeekToTime } from "@foxglove/studio-base/util/time";
+import { BlockBagPlayer } from "@foxglove/studio-base/players/BlockBagPlayer";
 
 import * as SampleNuscenesLayout from "./SampleNuscenesLayout.json";
 
@@ -24,16 +21,12 @@ class SampleNuscenesDataSourceFactory implements IDataSourceFactory {
   initialize(args: DataSourceFactoryInitializeArgs): ReturnType<IDataSourceFactory["initialize"]> {
     const bagUrl =
       "https://storage.googleapis.com/foxglove-public-assets/nuScenes-v1.0-mini-scene-0061.bag";
-    const bagWorkerDataProvider = new WorkerBagDataProvider({ type: "remote", url: bagUrl });
-    const messageCacheProvider = new Ros1MemoryCacheDataProvider(bagWorkerDataProvider, {
-      unlimitedCache: args.unlimitedMemoryCache,
-    });
 
-    return new RandomAccessPlayer(messageCacheProvider, {
+    return new BlockBagPlayer({
+      source: { type: "remote", url: bagUrl },
       isSampleDataSource: true,
-      metricsCollector: args.metricsCollector,
-      seekToTime: getSeekToTime(),
       name: "Adapted from nuScenes dataset.\nCopyright © 2020 nuScenes.\nhttps://www.nuscenes.org/terms-of-use",
+      metricsCollector: args.metricsCollector,
       // Use blank url params so the data source is set in the url
       urlParams: {},
     });

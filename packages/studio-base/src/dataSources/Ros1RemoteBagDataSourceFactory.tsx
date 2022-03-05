@@ -6,11 +6,8 @@ import {
   IDataSourceFactory,
   DataSourceFactoryInitializeArgs,
 } from "@foxglove/studio-base/context/PlayerSelectionContext";
-import RandomAccessPlayer from "@foxglove/studio-base/players/RandomAccessPlayer";
+import { BlockBagPlayer } from "@foxglove/studio-base/players/BlockBagPlayer";
 import { Player } from "@foxglove/studio-base/players/types";
-import Ros1MemoryCacheDataProvider from "@foxglove/studio-base/randomAccessDataProviders/Ros1MemoryCacheDataProvider";
-import WorkerBagDataProvider from "@foxglove/studio-base/randomAccessDataProviders/WorkerBagDataProvider";
-import { getSeekToTime } from "@foxglove/studio-base/util/time";
 
 class Ros1RemoteBagDataSourceFactory implements IDataSourceFactory {
   id = "ros1-remote-bagfile";
@@ -25,18 +22,17 @@ class Ros1RemoteBagDataSourceFactory implements IDataSourceFactory {
       return;
     }
 
-    const bagWorkerDataProvider = new WorkerBagDataProvider({ type: "remote", url });
-    const messageCacheProvider = new Ros1MemoryCacheDataProvider(bagWorkerDataProvider, {
-      unlimitedCache: args.unlimitedMemoryCache,
-    });
+    // fixme
+    // Overridden to 500ms to limit the number of blocks that need to be
+    // fetched per seek from the potentially slow remote data source
+    // seekBackNs: BigInt(0.5e9),
 
-    return new RandomAccessPlayer(messageCacheProvider, {
+    return new BlockBagPlayer({
+      source: { type: "remote", url },
+      isSampleDataSource: true,
+      name: "Adapted from nuScenes dataset.\nCopyright © 2020 nuScenes.\nhttps://www.nuscenes.org/terms-of-use",
       metricsCollector: args.metricsCollector,
-      seekToTime: getSeekToTime(),
-      // Overridden to 500ms to limit the number of blocks that need to be
-      // fetched per seek from the potentially slow remote data source
-      seekBackNs: BigInt(0.5e9),
-      name: url,
+      // Use blank url params so the data source is set in the url
       urlParams: {
         url,
       },

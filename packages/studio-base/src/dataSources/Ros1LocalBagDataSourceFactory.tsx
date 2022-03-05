@@ -24,7 +24,7 @@ class Ros1LocalBagDataSourceFactory implements IDataSourceFactory {
 
     return new BlockBagPlayer({
       metricsCollector: args.metricsCollector,
-      file,
+      source: { type: "file", file },
     });
   }
 }

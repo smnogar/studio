@@ -101,6 +101,7 @@ function getDatumsForMessagePathItem(
       });
     }
   }
+
   const hasMismatchedData =
     isCustomScale(xAxisVal) && (!xItem || yItem.queriedData.length !== xItem.queriedData.length);
   return { data, hasMismatchedData };
@@ -185,6 +186,13 @@ function getDatasetsFromMessagePlotPath({
         // If we have a scatter plot, we can't take the derivative, so instead show nothing
         rangeData = [];
       }
+    }
+
+    // Messages are provided in receive time order but header stamps might be out of order
+    // This would create zig-zag lines connecting the wrong points. Sorting the header stamp values (x)
+    // results in the datums being in the correct order for connected lines.
+    if (path.timestampMethod === "headerStamp") {
+      rangeData.sort((a, b) => a.x - b.x);
     }
 
     // NaN points are not displayed, and result in a break in the line.
