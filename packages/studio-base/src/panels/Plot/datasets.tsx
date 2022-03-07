@@ -191,6 +191,10 @@ function getDatasetsFromMessagePlotPath({
     // Messages are provided in receive time order but header stamps might be out of order
     // This would create zig-zag lines connecting the wrong points. Sorting the header stamp values (x)
     // results in the datums being in the correct order for connected lines.
+    //
+    // An example is when messages at the same receive time have different header stamps. The receive
+    // time ordering is undefined (could be different for different data sources), but the header stamps
+    // still need sorting so the plot renders correctly.
     if (path.timestampMethod === "headerStamp") {
       rangeData.sort((a, b) => a.x - b.x);
     }
