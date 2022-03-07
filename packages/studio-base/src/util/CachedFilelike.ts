@@ -195,6 +195,7 @@ export default class CachedFilelike implements Filelike {
 
       this._lastResolvedCallbackEnd = range.end;
       const buffer = this._virtualBuffer.slice(range.start, range.end);
+
       resolve(buffer);
       return false;
     });
