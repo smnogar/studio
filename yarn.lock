@@ -2409,16 +2409,17 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@foxglove/rosbag@portal:/Users/roman/dev/github.com/foxglove/rosbag::locator=foxglove-studio%40workspace%3A.":
-  version: 0.0.0-use.local
-  resolution: "@foxglove/rosbag@portal:/Users/roman/dev/github.com/foxglove/rosbag::locator=foxglove-studio%40workspace%3A."
+"@foxglove/rosbag@github:foxglove/rosbag#09c9e878378f9c1d6dfea0de99d2ffd22ff1d314":
+  version: 0.1.2
+  resolution: "@foxglove/rosbag@https://github.com/foxglove/rosbag.git#commit=09c9e878378f9c1d6dfea0de99d2ffd22ff1d314"
   dependencies:
     "@foxglove/rosmsg": ^2.0.0 || ^3.0.0
     "@foxglove/rosmsg-serialization": ^1.2.3
     "@foxglove/rostime": ^1.1.0
     heap: ^0.2.6
+  checksum: 896615276788bb8790d2889d4e38af0bb988335249cf2229beb877bfb9138ec3f73675589c57e65303673af7dbc4830e98631c118b15a813ae42c700ea8f07d0
   languageName: node
-  linkType: soft
+  linkType: hard
 
 "@foxglove/rosmsg-msgs-common@npm:1.0.4, @foxglove/rosmsg-msgs-common@npm:^1.0.4":
   version: 1.0.4
@@ -2512,7 +2513,7 @@ __metadata:
     "@foxglove/regl-worldview": 2.4.0
     "@foxglove/ros1": 1.4.0
     "@foxglove/ros2": 3.1.1
-    "@foxglove/rosbag": 0.1.2
+    "@foxglove/rosbag": "github:foxglove/rosbag#09c9e878378f9c1d6dfea0de99d2ffd22ff1d314"
     "@foxglove/rosbag2-web": 4.0.3
     "@foxglove/rosmsg": 3.0.0
     "@foxglove/rosmsg-msgs-common": 1.0.4

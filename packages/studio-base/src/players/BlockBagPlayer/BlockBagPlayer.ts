@@ -343,10 +343,6 @@ export class BlockBagPlayer implements Player {
         return;
       }
 
-      if (!msg) {
-        continue;
-      }
-
       const event = this._messageDataToMessageEvent(msg);
       if (!event) {
         continue;
@@ -387,11 +383,9 @@ export class BlockBagPlayer implements Player {
           return;
         }
 
-        if (message) {
-          const event = this._messageDataToMessageEvent(message);
-          if (event) {
-            messages.push(event);
-          }
+        const event = this._messageDataToMessageEvent(message);
+        if (event) {
+          messages.push(event);
         }
         break;
       }
@@ -405,7 +399,8 @@ export class BlockBagPlayer implements Player {
       position: forwardPosition,
     });
 
-    // Sort messages in increasing receiveTime order
+    // Our iterator reads messages in reverse, but the studio message pipeline assumes
+    // messages are delivered in increasing receiveTime order
     messages.sort((a, b) => compare(a.receiveTime, b.receiveTime));
 
     this._messages = messages;
@@ -617,11 +612,6 @@ export class BlockBagPlayer implements Player {
     }
 
     for await (const message of this._forwardIterator) {
-      if (!message) {
-        // end of stream
-        break;
-      }
-
       const event = this._messageDataToMessageEvent(message);
       if (!event) {
         break;
@@ -773,8 +763,6 @@ export class BlockBagPlayer implements Player {
       const blockStartTime = add(this._start, fromNanoSec(BigInt(idx * this._blockDurationNanos)));
       const nextBlockStartTime = add(blockStartTime, fromNanoSec(BigInt(this._blockDurationNanos)));
 
-      // fixme - allow a max time for the iterator which could help it ignore
-      // chunks that we don't care about
       const iterator = this._bag.forwardIterator({
         topics: Array.from(topics),
         position: blockStartTime,
@@ -793,7 +781,7 @@ export class BlockBagPlayer implements Player {
           return;
         }
 
-        if (!messageData || !messageData.data) {
+        if (!messageData.data) {
           continue;
         }
 
