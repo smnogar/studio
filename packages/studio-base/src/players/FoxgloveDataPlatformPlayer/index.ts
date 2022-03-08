@@ -187,7 +187,7 @@ export default class FoxgloveDataPlatformPlayer implements Player {
 
     const topics: Topic[] = [];
     const datatypes: RosDatatypes = new Map();
-    rawTopics: for (const rawTopic of rawTopics) {
+    for (const rawTopic of rawTopics) {
       const { topic, encoding: messageEncoding, schemaEncoding, schema, schemaName } = rawTopic;
       if (schema == undefined) {
         throw new Error(`missing requested schema for ${topic}`);
@@ -198,14 +198,15 @@ export default class FoxgloveDataPlatformPlayer implements Player {
         parsedChannels = [];
         this._parsedChannelsByTopic.set(topic, parsedChannels);
       }
-      for (const info of parsedChannels) {
-        if (
-          info.messageEncoding === messageEncoding &&
-          info.schemaEncoding === schemaEncoding &&
-          isEqual(info.schema, schema)
-        ) {
-          continue rawTopics;
-        }
+
+      const matchedChannel = parsedChannels.some(
+        (channel) =>
+          channel.messageEncoding === messageEncoding &&
+          channel.schemaEncoding === schemaEncoding &&
+          isEqual(channel.schema, schema),
+      );
+      if (matchedChannel) {
+        continue;
       }
 
       const parsedChannel = parseChannel({
@@ -229,8 +230,8 @@ export default class FoxgloveDataPlatformPlayer implements Player {
     this._caches.partial = new MessageMemoryCache({ start: this._start, end: this._end });
     this._metricsCollector.initialized();
     this._emitState();
-    this._startPreloadTaskIfNeeded("full");
-    this._startPreloadTaskIfNeeded("partial");
+    this._startPreloadTaskIfNeeded("full").catch((e) => log.error(e));
+    this._startPreloadTaskIfNeeded("partial").catch((e) => log.error(e));
   };
 
   private _addProblem(
@@ -312,8 +313,8 @@ export default class FoxgloveDataPlatformPlayer implements Player {
       (s) => s.preloadType === "full",
     );
     this._clearPreloadedData();
-    this._startPreloadTaskIfNeeded("full");
-    this._startPreloadTaskIfNeeded("partial");
+    this._startPreloadTaskIfNeeded("full").catch((e) => log.error(e));
+    this._startPreloadTaskIfNeeded("partial").catch((e) => log.error(e));
     this._emitState();
   }
 
@@ -344,7 +345,7 @@ export default class FoxgloveDataPlatformPlayer implements Player {
       const startTime = this._currentTime;
       const endTime = clampTime(add(startTime, fromMillis(readMs)), this._start, this._end);
       if (this._subscriptions.partial.length > 0) {
-        this._startPreloadTaskIfNeeded("partial");
+        this._startPreloadTaskIfNeeded("partial").catch((e) => log.error(e));
         let messages;
         while (
           !(messages = this._caches.partial.getMessages({
@@ -383,54 +384,54 @@ export default class FoxgloveDataPlatformPlayer implements Player {
     this._updateProgress();
   }
 
-  private _startPreloadTaskIfNeeded(preloadType: SubscriptionPreloadType) {
-    const preloadedMessages = this._caches[preloadType];
-
-    if (!preloadedMessages || this._closed) {
-      return;
-    }
-
-    if (this._currentPreloadTasks[preloadType]) {
-      return;
-    }
-
-    const topics = uniq(this._subscriptions[preloadType].map((s) => s.topic));
-    if (topics.length === 0) {
-      return;
-    }
-
-    const nextRangeToLoad = preloadedMessages.nextRangeToLoad(
-      preloadType === "full" ? this._start : this._currentTime,
-    );
-    if (nextRangeToLoad == undefined) {
-      return;
-    }
-
-    const shouldPreload =
-      preloadType === "full" ||
-      toSec(subtract(nextRangeToLoad.start, this._currentTime)) < this._preloadThresholdSecs;
-    if (!shouldPreload) {
-      return;
-    }
-
-    const startTime = nextRangeToLoad.start;
-    const endTime = clampTime(
-      preloadType === "full" ? this._end : add(startTime, fromSec(this._preloadDurationSecs)),
-      this._start,
-      nextRangeToLoad.end,
-    );
-    if (areEqual(startTime, endTime)) {
-      return;
-    }
-
+  private _startPreloadTaskIfNeeded = async (preloadType: SubscriptionPreloadType) => {
     const thisTask = new AbortController();
-    thisTask.signal.addEventListener("abort", () => {
-      log.debug("Aborting preload task", startTime, endTime);
-    });
-    this._currentPreloadTasks[preloadType] = thisTask;
-    log.debug("Starting preload task", startTime, endTime);
 
-    (async () => {
+    try {
+      const preloadedMessages = this._caches[preloadType];
+      if (!preloadedMessages || this._closed) {
+        return;
+      }
+
+      if (this._currentPreloadTasks[preloadType]) {
+        return;
+      }
+
+      const topics = uniq(this._subscriptions[preloadType].map((s) => s.topic));
+      if (topics.length === 0) {
+        return;
+      }
+
+      const nextRangeToLoad = preloadedMessages.nextRangeToLoad(
+        preloadType === "full" ? this._start : this._currentTime,
+      );
+      if (nextRangeToLoad == undefined) {
+        return;
+      }
+
+      const shouldPreload =
+        preloadType === "full" ||
+        toSec(subtract(nextRangeToLoad.start, this._currentTime)) < this._preloadThresholdSecs;
+      if (!shouldPreload) {
+        return;
+      }
+
+      const startTime = nextRangeToLoad.start;
+      const endTime = clampTime(
+        preloadType === "full" ? this._end : add(startTime, fromSec(this._preloadDurationSecs)),
+        this._start,
+        nextRangeToLoad.end,
+      );
+      if (areEqual(startTime, endTime)) {
+        return;
+      }
+
+      thisTask.signal.addEventListener("abort", () => {
+        log.debug("Aborting preload task", startTime, endTime);
+      });
+      this._currentPreloadTasks[preloadType] = thisTask;
+      log.debug("Starting preload task", startTime, endTime);
+
       const stream = streamMessages({
         api: this._consoleApi,
         signal: thisTask.signal,
@@ -453,29 +454,27 @@ export default class FoxgloveDataPlatformPlayer implements Player {
         log.debug("Adding preloaded chunk in", range, "with", messages.length, "messages");
         preloadedMessages.insert(range, messages);
         this._updateProgress();
-        if (preloadType === "partial") {
-          this._loadedMoreMessages?.resolve();
-          this._loadedMoreMessages = undefined;
-        }
         this._emitState();
       }
-    })()
-      .catch((error) => {
-        if (error.name === "AbortError") {
-          return;
-        }
-        log.error(error);
-        captureException(error);
-        this._addProblem("stream-error", { message: error.message, error, severity: "error" });
-      })
-      .finally(() => {
-        if (this._currentPreloadTasks[preloadType] === thisTask) {
-          this._currentPreloadTasks[preloadType] = undefined;
-        }
-      });
+    } catch (error) {
+      if (error.name === "AbortError") {
+        return;
+      }
+      log.error(error);
+      captureException(error);
+      this._addProblem("stream-error", { message: error.message, error, severity: "error" });
+    } finally {
+      if (this._currentPreloadTasks[preloadType] === thisTask) {
+        this._currentPreloadTasks[preloadType] = undefined;
+      }
+      if (preloadType === "partial") {
+        this._loadedMoreMessages?.resolve();
+        this._loadedMoreMessages = undefined;
+      }
+    }
 
     this._emitState();
-  }
+  };
 
   private _updateProgress() {
     const noFullTopics = this._subscriptions.full.length === 0;
@@ -528,7 +527,7 @@ export default class FoxgloveDataPlatformPlayer implements Player {
     this._currentPreloadTasks.full?.abort();
     this._currentPreloadTasks.partial?.abort();
     this._currentPreloadTasks = { full: undefined, partial: undefined };
-    this._startPreloadTaskIfNeeded("partial");
+    this._startPreloadTaskIfNeeded("partial").catch((e) => log.error(e));
     this._emitState();
   }
 
