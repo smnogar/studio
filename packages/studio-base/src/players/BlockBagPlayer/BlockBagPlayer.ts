@@ -1,21 +1,12 @@
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/
-//
-// This file incorporates work covered by the following copyright and
-// permission notice:
-//
-//   Copyright 2019-2021 Cruise LLC
-//
-//   This source code is licensed under the Apache License, Version 2.0,
-//   found at http://www.apache.org/licenses/LICENSE-2.0
-//   You may not use this file except in compliance with the License.
 
 import { v4 as uuidv4 } from "uuid";
 import decompressLZ4 from "wasm-lz4";
 
 import Log from "@foxglove/log";
-import { Bag, MessageData, Filelike } from "@foxglove/rosbag";
+import { Bag, MessageEvent as RosbagMessageEvent, Filelike } from "@foxglove/rosbag";
 import { BlobReader } from "@foxglove/rosbag/web";
 import { parse as parseMessageDefinition } from "@foxglove/rosmsg";
 import { LazyMessageReader } from "@foxglove/rosmsg-serialization";
@@ -144,7 +135,7 @@ export class BlockBagPlayer implements Player {
   private _closed: boolean = false;
   private _readersByConnectionId = new Map<number, LazyMessageReader>();
   private _topicsByConnectionId = new Map<number, string>();
-  private _forwardIterator?: ReturnType<Bag["forwardIterator"]>;
+  private _forwardIterator?: ReturnType<Bag["messageIterator"]>;
   private _lastMessage?: MessageEvent<unknown>;
   private _publishedTopics = new Map<string, Set<string>>();
   private _seekTarget?: Time;
@@ -221,7 +212,7 @@ export class BlockBagPlayer implements Player {
       }
 
       this._bag = new Bag(fileLike, {
-        noParse: true,
+        parse: false,
         decompress: {
           bz2: (buffer: Uint8Array, size: number) => {
             return bzip2.decompress(buffer, size, { small: false });
@@ -321,7 +312,7 @@ export class BlockBagPlayer implements Player {
 
     const topics = new Set(this._subscriptions.map((subscription) => subscription.topic));
 
-    this._forwardIterator = this._bag.forwardIterator({
+    this._forwardIterator = this._bag.messageIterator({
       topics: Array.from(topics),
     });
 
@@ -376,7 +367,11 @@ export class BlockBagPlayer implements Player {
 
     const messages: MessageEvent<unknown>[] = [];
     for (const topic of topics) {
-      const topicIterator = this._bag.reverseIterator({ topics: [topic], position: targetTime });
+      const topicIterator = this._bag.messageIterator({
+        topics: [topic],
+        start: targetTime,
+        reverse: true,
+      });
       for await (const message of topicIterator) {
         // A new state request during backfill, cancel the backfill to service the new state
         if (this._nextState) {
@@ -394,9 +389,9 @@ export class BlockBagPlayer implements Player {
     // Our reverse iterators loaded the messages inclusive of the seek time, thus the next messages
     // we read should be _after_ the seek time.
     const forwardPosition = add(targetTime, { sec: 0, nsec: 1 });
-    this._forwardIterator = this._bag.forwardIterator({
+    this._forwardIterator = this._bag.messageIterator({
       topics: Array.from(topics),
-      position: forwardPosition,
+      start: forwardPosition,
     });
 
     // Our iterator reads messages in reverse, but the studio message pipeline assumes
@@ -531,37 +526,36 @@ export class BlockBagPlayer implements Player {
     return await this._listener(data);
   }
 
-  private _messageDataToMessageEvent(message: MessageData): MessageEvent<unknown> | undefined {
-    const reader = this._readersByConnectionId.get(message.conn);
+  private _messageDataToMessageEvent(
+    msgEvent: RosbagMessageEvent,
+  ): MessageEvent<unknown> | undefined {
+    const connectionId = msgEvent.connectionId;
+    const reader = this._readersByConnectionId.get(connectionId);
     if (!reader) {
-      this._problemManager.addProblem(`missingConnRecord-${message.conn}`, {
+      this._problemManager.addProblem(`missingConnRecord-${connectionId}`, {
         severity: "error",
-        message: `Cannot deserialize message for missing connection id ${message.conn}`,
+        message: `Cannot deserialize message for missing connection id ${connectionId}`,
         tip: `Check that your bag file is well-formed. It should have a connection record for every connection id referenced from a message record.`,
       });
       return undefined;
     }
 
-    const topic = this._topicsByConnectionId.get(message.conn);
+    const topic = this._topicsByConnectionId.get(connectionId);
     if (!topic) {
-      this._problemManager.addProblem(`missingConnRecord-${message.conn}`, {
+      this._problemManager.addProblem(`missingConnRecord-${connectionId}`, {
         severity: "error",
-        message: `Missing connection id ${message.conn}`,
+        message: `Missing connection id ${connectionId}`,
         tip: `Check that your bag file is well-formed. It should have a connection record for every connection id referenced from a message record.`,
       });
       return undefined;
     }
 
-    if (!message.data) {
-      return undefined;
-    }
-
-    const parsedMessage = reader.readMessage(message.data);
+    const parsedMessage = reader.readMessage(msgEvent.data);
     const event: MessageEvent<unknown> = {
       topic,
-      receiveTime: message.time,
+      receiveTime: msgEvent.timestamp,
       message: parsedMessage,
-      sizeInBytes: message.data.length,
+      sizeInBytes: msgEvent.data.length,
     };
 
     return event;
@@ -653,9 +647,9 @@ export class BlockBagPlayer implements Player {
           this._lastMessage = undefined;
 
           const topics = new Set(this._subscriptions.map((sub) => sub.topic));
-          this._forwardIterator = this._bag?.forwardIterator({
+          this._forwardIterator = this._bag?.messageIterator({
             topics: Array.from(topics),
-            position: this._currentTime,
+            start: this._currentTime,
           });
         }
 
@@ -763,9 +757,9 @@ export class BlockBagPlayer implements Player {
       const blockStartTime = add(this._start, fromNanoSec(BigInt(idx * this._blockDurationNanos)));
       const nextBlockStartTime = add(blockStartTime, fromNanoSec(BigInt(this._blockDurationNanos)));
 
-      const iterator = this._bag.forwardIterator({
+      const iterator = this._bag.messageIterator({
         topics: Array.from(topics),
-        position: blockStartTime,
+        start: blockStartTime,
       });
 
       const messagesByTopic: Record<string, MessageEvent<unknown>[]> = {};
@@ -775,28 +769,24 @@ export class BlockBagPlayer implements Player {
       }
 
       let sizeInBytes = 0;
-      for await (const messageData of iterator) {
+      for await (const msgEvent of iterator) {
         // State change requested, bail
         if (this._nextState) {
           return;
         }
 
-        if (!messageData.data) {
-          continue;
-        }
-
-        if (compare(messageData.time, nextBlockStartTime) >= 0) {
+        if (compare(msgEvent.timestamp, nextBlockStartTime) >= 0) {
           break;
         }
 
-        const event = this._messageDataToMessageEvent(messageData);
+        const event = this._messageDataToMessageEvent(msgEvent);
         if (!event) {
           continue;
         }
 
         const events = messagesByTopic[event.topic]!;
-        const messageSizeInBytes = messageData.data.byteLength;
-        sizeInBytes += messageData.data.byteLength;
+        const messageSizeInBytes = msgEvent.data.byteLength;
+        sizeInBytes += msgEvent.data.byteLength;
 
         // Adding this message will exceed the cache size
         // Evict blocks until we have enough size for the message

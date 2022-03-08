@@ -40,7 +40,7 @@
     "@foxglove/regl-worldview": "2.4.0",
     "@foxglove/ros1": "1.4.0",
     "@foxglove/ros2": "3.1.1",
-    "@foxglove/rosbag": "github:foxglove/rosbag#09c9e878378f9c1d6dfea0de99d2ffd22ff1d314",
+    "@foxglove/rosbag": "0.2.0",
     "@foxglove/rosbag2-web": "4.0.3",
     "@foxglove/rosmsg": "3.0.0",
     "@foxglove/rosmsg-msgs-common": "1.0.4",
