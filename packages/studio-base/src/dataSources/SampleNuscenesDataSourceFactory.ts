@@ -6,7 +6,8 @@ import {
   IDataSourceFactory,
   DataSourceFactoryInitializeArgs,
 } from "@foxglove/studio-base/context/PlayerSelectionContext";
-import { BlockBagPlayer } from "@foxglove/studio-base/players/BlockBagPlayer";
+import { IterablePlayer } from "@foxglove/studio-base/players/IterablePlayer";
+import { BagIterableSource } from "@foxglove/studio-base/players/IterablePlayer/BagIterableSource";
 
 import * as SampleNuscenesLayout from "./SampleNuscenesLayout.json";
 
@@ -22,8 +23,9 @@ class SampleNuscenesDataSourceFactory implements IDataSourceFactory {
     const bagUrl =
       "https://storage.googleapis.com/foxglove-public-assets/nuScenes-v1.0-mini-scene-0061.bag";
 
-    return new BlockBagPlayer({
-      source: { type: "remote", url: bagUrl },
+    const bagSource = new BagIterableSource({ type: "remote", url: bagUrl });
+    return new IterablePlayer({
+      source: bagSource,
       isSampleDataSource: true,
       name: "Adapted from nuScenes dataset.\nCopyright © 2020 nuScenes.\nhttps://www.nuscenes.org/terms-of-use",
       metricsCollector: args.metricsCollector,

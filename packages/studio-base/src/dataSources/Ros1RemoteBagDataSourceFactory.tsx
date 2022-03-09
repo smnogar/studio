@@ -6,7 +6,8 @@ import {
   IDataSourceFactory,
   DataSourceFactoryInitializeArgs,
 } from "@foxglove/studio-base/context/PlayerSelectionContext";
-import { BlockBagPlayer } from "@foxglove/studio-base/players/BlockBagPlayer";
+import { IterablePlayer } from "@foxglove/studio-base/players/IterablePlayer";
+import { BagIterableSource } from "@foxglove/studio-base/players/IterablePlayer/BagIterableSource";
 import { Player } from "@foxglove/studio-base/players/types";
 
 class Ros1RemoteBagDataSourceFactory implements IDataSourceFactory {
@@ -22,13 +23,9 @@ class Ros1RemoteBagDataSourceFactory implements IDataSourceFactory {
       return;
     }
 
-    // fixme
-    // Overridden to 500ms to limit the number of blocks that need to be
-    // fetched per seek from the potentially slow remote data source
-    // seekBackNs: BigInt(0.5e9),
-
-    return new BlockBagPlayer({
-      source: { type: "remote", url },
+    const bagSource = new BagIterableSource({ type: "remote", url });
+    return new IterablePlayer({
+      source: bagSource,
       isSampleDataSource: true,
       name: "Adapted from nuScenes dataset.\nCopyright © 2020 nuScenes.\nhttps://www.nuscenes.org/terms-of-use",
       metricsCollector: args.metricsCollector,

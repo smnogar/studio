@@ -3,13 +3,8 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/
 
 import { v4 as uuidv4 } from "uuid";
-import decompressLZ4 from "wasm-lz4";
 
 import Log from "@foxglove/log";
-import { Bag, MessageEvent as RosbagMessageEvent, Filelike } from "@foxglove/rosbag";
-import { BlobReader } from "@foxglove/rosbag/web";
-import { parse as parseMessageDefinition } from "@foxglove/rosmsg";
-import { LazyMessageReader } from "@foxglove/rosmsg-serialization";
 import {
   Time,
   add,
@@ -39,12 +34,10 @@ import {
   MessageBlock,
 } from "@foxglove/studio-base/players/types";
 import { RosDatatypes } from "@foxglove/studio-base/types/RosDatatypes";
-import BrowserHttpReader from "@foxglove/studio-base/util/BrowserHttpReader";
-import CachedFilelike from "@foxglove/studio-base/util/CachedFilelike";
-import { getBagChunksOverlapCount } from "@foxglove/studio-base/util/bags";
 import delay from "@foxglove/studio-base/util/delay";
 import { SEEK_ON_START_NS, TimestampMethod } from "@foxglove/studio-base/util/time";
-import Bzip2 from "@foxglove/wasm-bz2";
+
+import { IIterableSource, IMessageIterator } from "./IIterableSource";
 
 const log = Log.getLogger(__filename);
 
@@ -66,12 +59,10 @@ const MIN_MEM_CACHE_BLOCK_SIZE_NS = 0.1e9;
 // less flexible, so we may want to move away from a single-level block structure in the future.
 const MAX_BLOCKS = 400;
 
-type BagSource = { type: "file"; file: File } | { type: "remote"; url: string };
-
 export type BlockBagPlayerOptions = {
   metricsCollector?: PlayerMetricsCollectorInterface;
 
-  source: BagSource;
+  source: IIterableSource;
 
   // Optional player name
   name?: string;
@@ -92,11 +83,10 @@ type BagPlayerState =
   | "play";
 
 // A `Player` that wraps around a tree of `RandomAccessDataProviders`.
-export class BlockBagPlayer implements Player {
+export class IterablePlayer implements Player {
   private _urlParams?: Record<string, string>;
   private _name?: string;
   private _filePath?: string;
-  private _source: BagSource;
   private _nextState?: BagPlayerState;
   private _state: BagPlayerState = "preinit";
   private _runningState: boolean = false;
@@ -131,11 +121,7 @@ export class BlockBagPlayer implements Player {
   private _hasError = false;
   private _lastRangeMillis?: number;
   private _parsedMessageDefinitionsByTopic: ParsedMessageDefinitionsByTopic = {};
-  private _bag: Bag | undefined;
   private _closed: boolean = false;
-  private _readersByConnectionId = new Map<number, LazyMessageReader>();
-  private _topicsByConnectionId = new Map<number, string>();
-  private _forwardIterator?: ReturnType<Bag["messageIterator"]>;
   private _lastMessage?: MessageEvent<unknown>;
   private _publishedTopics = new Map<string, Set<string>>();
   private _seekTarget?: Time;
@@ -150,10 +136,13 @@ export class BlockBagPlayer implements Player {
   private _blocks: (MessageBlock | undefined)[] = [];
   private _blockDurationNanos: number = 0;
 
+  private _iterableSource: IIterableSource;
+  private _forwardIterator?: IMessageIterator;
+
   constructor(options: BlockBagPlayerOptions) {
     const { metricsCollector, urlParams, source, name } = options;
 
-    this._source = source;
+    this._iterableSource = source;
     this._name = name;
     this._urlParams = urlParams;
     this._metricsCollector = metricsCollector ?? new NoopMetricsCollector();
@@ -182,93 +171,19 @@ export class BlockBagPlayer implements Player {
     // emit state indicating start of initialization
     await this._emitState();
 
-    await decompressLZ4.isLoaded;
-    const bzip2 = await Bzip2.init();
-
     try {
-      let fileLike: Filelike | undefined;
-      if (this._source.type === "remote") {
-        const bagUrl = this._source.url;
-        const fileReader = new BrowserHttpReader(bagUrl);
-        const remoteReader = new CachedFilelike({
-          fileReader,
-          cacheSizeInBytes: 1024 * 1024 * 200, // 200MiB
-          keepReconnectingCallback: (_reconnecting) => {
-            // no-op?
-          },
-        });
+      const { start, end, topics, problems, publishersByTopic } =
+        await this._iterableSource.initialize();
 
-        // Call open on the remote reader to see if we can access the remote file
-        await remoteReader.open();
+      this._start = this._currentTime = start;
+      this._end = end;
+      this._providerTopics = topics;
+      this._publishedTopics = publishersByTopic;
 
-        if (remoteReader.size() === 0) {
-          throw new Error("Cannot play bag file. File is 0 bytes in size.");
-        }
-
-        fileLike = remoteReader;
-      } else {
-        this._filePath = this._source.file.name;
-        fileLike = new BlobReader(this._source.file);
-      }
-
-      this._bag = new Bag(fileLike, {
-        parse: false,
-        decompress: {
-          bz2: (buffer: Uint8Array, size: number) => {
-            return bzip2.decompress(buffer, size, { small: false });
-          },
-          lz4: (buffer: Uint8Array, size: number) => {
-            return decompressLZ4(buffer, size);
-          },
-        },
-      });
-
-      await this._bag.open();
-
-      const chunksOverlapCount = getBagChunksOverlapCount(this._bag.chunkInfos);
-      // If >25% of the chunks overlap, show a warning. It's common for a small number of chunks to overlap
-      // since it looks like `rosbag record` has a bit of a race condition, and that's not too terrible, so
-      // only warn when there's a more serious slowdown.
-      if (chunksOverlapCount > this._bag.chunkInfos.length * 0.25) {
-        const message = `This bag has many overlapping chunks (${chunksOverlapCount} out of ${this._bag.chunkInfos.length}). This results in more memory use during playback.`;
-        const tip = "Re-sort the messages in your bag by receive time.";
-        this._problemManager.addProblem("unsorted", {
-          severity: "warn",
-          message,
-          tip,
-        });
-      }
-
-      this._start = this._currentTime = this._bag.startTime ?? { sec: 0, nsec: 0 };
-      this._end = this._bag.endTime ?? { sec: 0, nsec: 0 };
-
-      // --- setup message readers for topics
-      this._providerTopics = [];
-      for (const [id, connection] of this._bag.connections) {
-        const datatype = connection.type;
-        if (!datatype) {
-          continue;
-        }
-
-        let publishers = this._publishedTopics.get(connection.topic);
-        if (publishers == undefined) {
-          publishers = new Set<string>();
-          this._publishedTopics.set(connection.topic, publishers);
-        }
-        if (connection.callerid) {
-          publishers.add(connection.callerid);
-        }
-
-        this._providerTopics.push({
-          name: connection.topic,
-          datatype,
-        });
-        const parsedDefinition = parseMessageDefinition(connection.messageDefinition);
-        this._parsedMessageDefinitionsByTopic[connection.topic] = parsedDefinition;
-
-        const reader = new LazyMessageReader(parsedDefinition);
-        this._readersByConnectionId.set(id, reader);
-        this._topicsByConnectionId.set(id, connection.topic);
+      let idx = 0;
+      for (const problem of problems) {
+        this._problemManager.addProblem(`init-problem-${idx}`, problem);
+        idx += 1;
       }
 
       // --- setup blocks
@@ -306,13 +221,9 @@ export class BlockBagPlayer implements Player {
   }
 
   private async _stateStartPlay() {
-    if (!this._bag) {
-      throw new Error("Cannot start without a bag instance");
-    }
-
     const topics = new Set(this._subscriptions.map((subscription) => subscription.topic));
 
-    this._forwardIterator = this._bag.messageIterator({
+    this._forwardIterator = this._iterableSource.messageIterator({
       topics: Array.from(topics),
     });
 
@@ -326,7 +237,7 @@ export class BlockBagPlayer implements Player {
     this._messages = [];
 
     const messageEvents: MessageEvent<unknown>[] = [];
-    for await (const msg of this._forwardIterator) {
+    for await (const iterResult of this._forwardIterator) {
       // Bail if a new state is requested while we are loading messages
       // This usually happens when seeking before the initial load is complete
       if (this._nextState) {
@@ -334,16 +245,17 @@ export class BlockBagPlayer implements Player {
         return;
       }
 
-      const event = this._messageDataToMessageEvent(msg);
-      if (!event) {
+      if (iterResult.problem) {
+        this._problemManager.addProblem(`connid-${iterResult.connectionId}`, iterResult.problem);
         continue;
       }
-      if (compare(event.receiveTime, stopTime) > 0) {
-        this._lastMessage = event;
+
+      if (compare(iterResult.msgEvent.receiveTime, stopTime) > 0) {
+        this._lastMessage = iterResult.msgEvent;
         break;
       }
 
-      messageEvents.push(event);
+      messageEvents.push(iterResult.msgEvent);
     }
 
     this._currentTime = stopTime;
@@ -353,11 +265,6 @@ export class BlockBagPlayer implements Player {
   }
 
   private async _stateSeekBackfill() {
-    if (!this._bag) {
-      this._setState("initialize");
-      return;
-    }
-
     const targetTime = this._seekTarget;
     if (!targetTime) {
       return;
@@ -367,21 +274,23 @@ export class BlockBagPlayer implements Player {
 
     const messages: MessageEvent<unknown>[] = [];
     for (const topic of topics) {
-      const topicIterator = this._bag.messageIterator({
+      const topicIterator = this._iterableSource.messageIterator({
         topics: [topic],
         start: targetTime,
         reverse: true,
       });
-      for await (const message of topicIterator) {
+      for await (const iterResult of topicIterator) {
         // A new state request during backfill, cancel the backfill to service the new state
         if (this._nextState) {
           return;
         }
 
-        const event = this._messageDataToMessageEvent(message);
-        if (event) {
-          messages.push(event);
+        if (iterResult.problem) {
+          this._problemManager.addProblem(`connid-${iterResult.connectionId}`, iterResult.problem);
+          continue;
         }
+
+        messages.push(iterResult.msgEvent);
         break;
       }
     }
@@ -389,7 +298,7 @@ export class BlockBagPlayer implements Player {
     // Our reverse iterators loaded the messages inclusive of the seek time, thus the next messages
     // we read should be _after_ the seek time.
     const forwardPosition = add(targetTime, { sec: 0, nsec: 1 });
-    this._forwardIterator = this._bag.messageIterator({
+    this._forwardIterator = this._iterableSource.messageIterator({
       topics: Array.from(topics),
       start: forwardPosition,
     });
@@ -526,41 +435,6 @@ export class BlockBagPlayer implements Player {
     return await this._listener(data);
   }
 
-  private _messageDataToMessageEvent(
-    msgEvent: RosbagMessageEvent,
-  ): MessageEvent<unknown> | undefined {
-    const connectionId = msgEvent.connectionId;
-    const reader = this._readersByConnectionId.get(connectionId);
-    if (!reader) {
-      this._problemManager.addProblem(`missingConnRecord-${connectionId}`, {
-        severity: "error",
-        message: `Cannot deserialize message for missing connection id ${connectionId}`,
-        tip: `Check that your bag file is well-formed. It should have a connection record for every connection id referenced from a message record.`,
-      });
-      return undefined;
-    }
-
-    const topic = this._topicsByConnectionId.get(connectionId);
-    if (!topic) {
-      this._problemManager.addProblem(`missingConnRecord-${connectionId}`, {
-        severity: "error",
-        message: `Missing connection id ${connectionId}`,
-        tip: `Check that your bag file is well-formed. It should have a connection record for every connection id referenced from a message record.`,
-      });
-      return undefined;
-    }
-
-    const parsedMessage = reader.readMessage(msgEvent.data);
-    const event: MessageEvent<unknown> = {
-      topic,
-      receiveTime: msgEvent.timestamp,
-      message: parsedMessage,
-      sizeInBytes: msgEvent.data.length,
-    };
-
-    return event;
-  }
-
   private async _tick(): Promise<void> {
     if (!this._isPlaying) {
       return;
@@ -599,37 +473,42 @@ export class BlockBagPlayer implements Player {
       this._end,
     );
 
-    const messages: MessageEvent<unknown>[] = [];
+    const msgEvents: MessageEvent<unknown>[] = [];
     if (this._lastMessage) {
-      messages.push(this._lastMessage);
+      msgEvents.push(this._lastMessage);
       this._lastMessage = undefined;
     }
 
-    for await (const message of this._forwardIterator) {
-      const event = this._messageDataToMessageEvent(message);
-      if (!event) {
-        break;
+    for await (const iterResult of this._forwardIterator) {
+      if (iterResult.problem) {
+        this._problemManager.addProblem(`connid-${iterResult.connectionId}`, iterResult.problem);
       }
 
       // State change request during playback
       // eslint disable because typescript doesn't realize isPlaying could change under us
       // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       if (this._nextState || !this._isPlaying) {
-        this._lastMessage = event;
+        if (iterResult.msgEvent) {
+          this._lastMessage = iterResult.msgEvent;
+        }
         return;
       }
 
+      if (iterResult.problem) {
+        continue;
+      }
+
       // The message is past the end time, we need to save it for next tick
-      if (compare(event.receiveTime, end) > 0) {
-        this._lastMessage = event;
+      if (compare(iterResult.msgEvent.receiveTime, end) > 0) {
+        this._lastMessage = iterResult.msgEvent;
         break;
       }
 
-      messages.push(event);
+      msgEvents.push(iterResult.msgEvent);
     }
 
     this._currentTime = end;
-    this._messages = messages;
+    this._messages = msgEvents;
     await this._emitState();
   }
 
@@ -647,7 +526,7 @@ export class BlockBagPlayer implements Player {
           this._lastMessage = undefined;
 
           const topics = new Set(this._subscriptions.map((sub) => sub.topic));
-          this._forwardIterator = this._bag?.messageIterator({
+          this._forwardIterator = this._iterableSource.messageIterator({
             topics: Array.from(topics),
             start: this._currentTime,
           });
@@ -667,10 +546,6 @@ export class BlockBagPlayer implements Player {
   }
 
   private async startBlockLoad(time: Time, opt?: { emit: boolean }) {
-    if (!this._bag) {
-      return;
-    }
-
     // During playback, we let the statePlay method emit state
     // When idle, we can emit state
     const shouldEmit = opt?.emit ?? true;
@@ -757,7 +632,7 @@ export class BlockBagPlayer implements Player {
       const blockStartTime = add(this._start, fromNanoSec(BigInt(idx * this._blockDurationNanos)));
       const nextBlockStartTime = add(blockStartTime, fromNanoSec(BigInt(this._blockDurationNanos)));
 
-      const iterator = this._bag.messageIterator({
+      const iterator = this._iterableSource.messageIterator({
         topics: Array.from(topics),
         start: blockStartTime,
       });
@@ -769,24 +644,24 @@ export class BlockBagPlayer implements Player {
       }
 
       let sizeInBytes = 0;
-      for await (const msgEvent of iterator) {
+      for await (const iterResult of iterator) {
         // State change requested, bail
         if (this._nextState) {
           return;
         }
 
-        if (compare(msgEvent.timestamp, nextBlockStartTime) >= 0) {
-          break;
-        }
-
-        const event = this._messageDataToMessageEvent(msgEvent);
-        if (!event) {
+        if (iterResult.problem) {
+          this._problemManager.addProblem(`connid-${iterResult.connectionId}`, iterResult.problem);
           continue;
         }
 
-        const events = messagesByTopic[event.topic]!;
-        const messageSizeInBytes = msgEvent.data.byteLength;
-        sizeInBytes += msgEvent.data.byteLength;
+        if (compare(iterResult.msgEvent.receiveTime, nextBlockStartTime) >= 0) {
+          break;
+        }
+
+        const events = messagesByTopic[iterResult.msgEvent.topic]!;
+        const messageSizeInBytes = iterResult.msgEvent.sizeInBytes;
+        sizeInBytes += messageSizeInBytes;
 
         // Adding this message will exceed the cache size
         // Evict blocks until we have enough size for the message
@@ -806,7 +681,7 @@ export class BlockBagPlayer implements Player {
         }
 
         totalBlockSizeBytes += messageSizeInBytes;
-        events.push(event);
+        events.push(iterResult.msgEvent);
       }
 
       const block = {
@@ -923,7 +798,6 @@ export class BlockBagPlayer implements Player {
   close(): void {
     this._isPlaying = false;
     this._closed = true;
-    this._bag = undefined;
     this._metricsCollector.close();
   }
 

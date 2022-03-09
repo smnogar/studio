@@ -6,7 +6,8 @@ import {
   IDataSourceFactory,
   DataSourceFactoryInitializeArgs,
 } from "@foxglove/studio-base/context/PlayerSelectionContext";
-import { BlockBagPlayer } from "@foxglove/studio-base/players/BlockBagPlayer";
+import { IterablePlayer } from "@foxglove/studio-base/players/IterablePlayer";
+import { BagIterableSource } from "@foxglove/studio-base/players/IterablePlayer/BagIterableSource";
 import { Player } from "@foxglove/studio-base/players/types";
 
 class Ros1LocalBagDataSourceFactory implements IDataSourceFactory {
@@ -22,9 +23,10 @@ class Ros1LocalBagDataSourceFactory implements IDataSourceFactory {
       return;
     }
 
-    return new BlockBagPlayer({
+    const bagSource = new BagIterableSource({ type: "file", file });
+    return new IterablePlayer({
       metricsCollector: args.metricsCollector,
-      source: { type: "file", file },
+      source: bagSource,
     });
   }
 }
