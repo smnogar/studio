@@ -261,6 +261,9 @@ export class IterablePlayer implements Player {
     this._currentTime = stopTime;
     this._messages = messageEvents;
     await this._emitState();
+    if (this._nextState) {
+      return;
+    }
     this._setState("idle");
   }
 
@@ -269,6 +272,9 @@ export class IterablePlayer implements Player {
     if (!targetTime) {
       return;
     }
+
+    this._lastMessage = undefined;
+    this._seekTarget = undefined;
 
     const topics = new Set(this._subscriptions.map((subscription) => subscription.topic));
 
@@ -309,10 +315,11 @@ export class IterablePlayer implements Player {
 
     this._messages = messages;
     this._currentTime = targetTime;
-    this._lastMessage = undefined;
-    this._seekTarget = undefined;
     this._lastSeekEmitTime = Date.now();
     await this._emitState();
+    if (this._nextState) {
+      return;
+    }
     this._setState(this._isPlaying ? "play" : "idle");
   }
 
@@ -463,7 +470,7 @@ export class IterablePlayer implements Player {
     this._lastRangeMillis = rangeMillis;
 
     if (!this._currentTime) {
-      throw new Error("Tried to play with no current time.");
+      throw new Error("Invariant: Tried to play with no current time.");
     }
 
     // The end time is our current time plus the range we want to read
@@ -475,6 +482,14 @@ export class IterablePlayer implements Player {
 
     const msgEvents: MessageEvent<unknown>[] = [];
     if (this._lastMessage) {
+      // If the last message we saw is still ahead of the tick time, we don't emit anything
+      if (compare(this._lastMessage.receiveTime, end) > 0) {
+        this._currentTime = end;
+        this._messages = msgEvents;
+        await this._emitState();
+        return;
+      }
+
       msgEvents.push(this._lastMessage);
       this._lastMessage = undefined;
     }
@@ -516,6 +531,7 @@ export class IterablePlayer implements Player {
     const subscriptions = this._subscriptions;
 
     try {
+      // fixme - this while look could go now?
       while (this._isPlaying && !this._hasError && !this._nextState) {
         const start = Date.now();
         await this._tick();
@@ -554,7 +570,10 @@ export class IterablePlayer implements Player {
 
     log.info("Start block load", time);
 
-    const topics = new Set(this._subscriptions.map((subscription) => subscription.topic));
+    const topics = this._subscriptions
+      .filter((sub) => sub.preloadType !== "partial")
+      .map((sub) => sub.topic);
+
     const timeNanos = Number(toNanoSec(subtractTimes(time, this._start)));
 
     const startBlockId = Math.floor(timeNanos / this._blockDurationNanos);
@@ -633,13 +652,13 @@ export class IterablePlayer implements Player {
       const nextBlockStartTime = add(blockStartTime, fromNanoSec(BigInt(this._blockDurationNanos)));
 
       const iterator = this._iterableSource.messageIterator({
-        topics: Array.from(topics),
+        topics: Array.from(topicsToFetch),
         start: blockStartTime,
       });
 
       const messagesByTopic: Record<string, MessageEvent<unknown>[]> = {};
       // Set all topic arrays to empty to indicate we've read this topic
-      for (const topic of topics) {
+      for (const topic of topicsToFetch) {
         messagesByTopic[topic] = [];
       }
 
@@ -774,7 +793,6 @@ export class IterablePlayer implements Player {
     if (this._state === "idle" || this._state === "seek-backfill" || this._state === "play") {
       if (!this._isPlaying && this._currentTime) {
         this.seekPlayback(this._currentTime);
-        return;
       }
     }
   }

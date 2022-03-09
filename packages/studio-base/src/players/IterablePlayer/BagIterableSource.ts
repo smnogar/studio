@@ -17,10 +17,10 @@ import Bzip2 from "@foxglove/wasm-bz2";
 
 import {
   IIterableSource,
-  IMessageIterator,
-  Initalization,
-  MessageIteratorArgs,
   IteratorResult,
+  Initalization,
+  IMessageIterator,
+  MessageIteratorArgs,
 } from "./IIterableSource";
 
 type BagSource = { type: "file"; file: File } | { type: "remote"; url: string };
@@ -100,13 +100,11 @@ export class BagIterableSource implements IIterableSource {
       }
 
       let publishers = publishersByTopic.get(connection.topic);
-      if (publishers == undefined) {
+      if (!publishers) {
         publishers = new Set<string>();
         publishersByTopic.set(connection.topic, publishers);
       }
-      if (connection.callerid) {
-        publishers.add(connection.callerid);
-      }
+      publishers.add(connection.callerid ?? String(connection.conn));
 
       topics.push({
         name: connection.topic,
@@ -139,7 +137,7 @@ export class BagIterableSource implements IIterableSource {
 
     const readersByConnectionId = this._readersByConnectionId;
     return {
-      async *[Symbol.asyncIterator](): AsyncIterator<IteratorResult> {
+      async *[Symbol.asyncIterator](): AsyncIterator<Readonly<IteratorResult>> {
         for await (const bagMsgEvent of iterator) {
           const connectionId = bagMsgEvent.connectionId;
           const reader = readersByConnectionId.get(connectionId);

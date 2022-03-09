@@ -41,5 +41,5 @@ export interface IMessageIterator {
 export interface IIterableSource {
   initialize(): Promise<Initalization>;
 
-  messageIterator(args: MessageIteratorArgs): AsyncIterable<Readonly<IteratorResult>>;
+  messageIterator(args: MessageIteratorArgs): IMessageIterator;
 }
