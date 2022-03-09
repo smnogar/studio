@@ -58,7 +58,7 @@ const MIN_MEM_CACHE_BLOCK_SIZE_NS = 0.1e9;
 // less flexible, so we may want to move away from a single-level block structure in the future.
 const MAX_BLOCKS = 400;
 
-export type BlockBagPlayerOptions = {
+type IterablePlayerOptions = {
   metricsCollector?: PlayerMetricsCollectorInterface;
 
   source: IIterableSource;
@@ -138,7 +138,7 @@ export class IterablePlayer implements Player {
   private _iterableSource: IIterableSource;
   private _forwardIterator?: IMessageIterator;
 
-  constructor(options: BlockBagPlayerOptions) {
+  constructor(options: IterablePlayerOptions) {
     const { metricsCollector, urlParams, source, name } = options;
 
     this._iterableSource = source;
