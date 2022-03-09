@@ -307,7 +307,6 @@ export default class BagDataProvider implements RandomAccessDataProvider {
         },
       },
     };
-
     try {
       await this._bag?.readMessages(options, onMessage);
     } catch (error) {
