@@ -15,8 +15,7 @@ import {
   toNanoSec,
   subtract as subtractTimes,
 } from "@foxglove/rostime";
-import { MessageEvent } from "@foxglove/studio";
-import { ParameterValue } from "@foxglove/studio";
+import { MessageEvent, ParameterValue } from "@foxglove/studio";
 import NoopMetricsCollector from "@foxglove/studio-base/players/NoopMetricsCollector";
 import PlayerProblemManager from "@foxglove/studio-base/players/PlayerProblemManager";
 import {
