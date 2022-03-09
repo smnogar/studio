@@ -531,7 +531,6 @@ export class IterablePlayer implements Player {
     const subscriptions = this._subscriptions;
 
     try {
-      // fixme - this while look could go now?
       while (this._isPlaying && !this._hasError && !this._nextState) {
         const start = Date.now();
         await this._tick();
@@ -546,6 +545,12 @@ export class IterablePlayer implements Player {
             topics: Array.from(topics),
             start: this._currentTime,
           });
+        }
+
+        // Eslint doesn't understand that this._nextState could change
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition, @typescript-eslint/strict-boolean-expressions
+        if (this._nextState) {
+          return;
         }
 
         const time = Date.now() - start;
