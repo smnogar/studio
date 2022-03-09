@@ -355,23 +355,13 @@ export class IterablePlayer implements Player {
             await this._stateStartPlay();
             break;
           case "idle":
-            await this._emitState();
-            if (this._currentTime) {
-              const start = performance.now();
-              await this.startBlockLoad(this._currentTime);
-              log.info(`Block load took: ${performance.now() - start} ms`);
-            }
+            await this._stateIdle();
             break;
           case "seek-backfill":
             await this._stateSeekBackfill();
             break;
           case "play": {
-            if (!this._currentTime) {
-              throw new Error("Tried to play before initialized");
-            }
-            const blockLoading = this.startBlockLoad(this._currentTime, { emit: false });
             await this._statePlay();
-            await blockLoading;
             break;
           }
         }
@@ -526,9 +516,22 @@ export class IterablePlayer implements Player {
     await this._emitState();
   }
 
+  private async _stateIdle() {
+    await this._emitState();
+    if (this._currentTime) {
+      const start = performance.now();
+      await this.loadBlocks(this._currentTime);
+      log.info(`Block load took: ${performance.now() - start} ms`);
+    }
+  }
+
   private async _statePlay() {
+    if (!this._currentTime) {
+      throw new Error("Invariant: currentTime not set before statePlay");
+    }
     const subscriptions = this._subscriptions;
 
+    const blockLoading = this.loadBlocks(this._currentTime, { emit: false });
     try {
       while (this._isPlaying && !this._hasError && !this._nextState) {
         const start = Date.now();
@@ -562,10 +565,12 @@ export class IterablePlayer implements Player {
     } catch (err) {
       this._setError((err as Error).message, err);
       await this._emitState();
+    } finally {
+      await blockLoading;
     }
   }
 
-  private async startBlockLoad(time: Time, opt?: { emit: boolean }) {
+  private async loadBlocks(time: Time, opt?: { emit: boolean }) {
     // During playback, we let the statePlay method emit state
     // When idle, we can emit state
     const shouldEmit = opt?.emit ?? true;
