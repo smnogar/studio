@@ -14,6 +14,7 @@ class RosbridgeDataSourceFactory implements IDataSourceFactory {
   type: IDataSourceFactory["type"] = "connection";
   displayName = "Rosbridge (ROS 1 & 2)";
   iconName: IDataSourceFactory["iconName"] = "Flow";
+  docsLink = "/rosbridge";
 
   formConfig = {
     fields: [{ id: "url", label: "WebSocket URL", defaultValue: "ws://localhost:9090" }],

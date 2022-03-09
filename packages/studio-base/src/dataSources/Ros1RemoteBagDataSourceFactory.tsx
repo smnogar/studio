@@ -18,6 +18,7 @@ class Ros1RemoteBagDataSourceFactory implements IDataSourceFactory {
   displayName = "ROS 1 Bag";
   iconName: IDataSourceFactory["iconName"] = "FileASPX";
   supportedFileTypes = [".bag"];
+  docsLink = "/ros1-bag";
 
   initialize(args: DataSourceFactoryInitializeArgs): Player | undefined {
     const url = args.url;

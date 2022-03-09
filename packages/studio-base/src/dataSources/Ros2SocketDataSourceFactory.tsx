@@ -14,6 +14,7 @@ class Ros2SocketDataSourceFactory implements IDataSourceFactory {
   type: IDataSourceFactory["type"] = "connection";
   displayName = "ROS 2";
   iconName: IDataSourceFactory["iconName"] = "studio.ROS";
+  docsLink = "/native";
 
   formConfig = {
     fields: [{ id: "url", label: "ROS_DOMAIN_ID", defaultValue: "0" }],

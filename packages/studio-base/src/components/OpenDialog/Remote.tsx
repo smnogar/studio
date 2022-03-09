@@ -2,7 +2,7 @@
 // License, v2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/
 
-import { TextField } from "@fluentui/react";
+import { TextField, Link } from "@fluentui/react";
 import { Stack } from "@mui/material";
 import path from "path";
 import { useCallback, useState } from "react";
@@ -80,6 +80,15 @@ export default function Remote(props: RemoteProps): JSX.Element {
             setCurrentUrl(newValue);
           }}
         />
+
+        {availableSources.map(
+          ({ displayName, docsLink }) =>
+            docsLink && (
+              <Link key={docsLink} href={`https://foxglove.dev/docs/studio/connection${docsLink}`}>
+                View {displayName} docs.
+              </Link>
+            ),
+        )}
       </Stack>
     </View>
   );

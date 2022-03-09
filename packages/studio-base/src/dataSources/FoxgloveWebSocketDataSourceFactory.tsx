@@ -14,6 +14,7 @@ export default class FoxgloveWebSocketDataSourceFactory implements IDataSourceFa
   type: IDataSourceFactory["type"] = "connection";
   displayName = "Foxglove WebSocket";
   iconName: IDataSourceFactory["iconName"] = "Flow";
+  docsLink = "/foxglove-websocket";
 
   formConfig = {
     fields: [{ id: "url", label: "WebSocket URL", defaultValue: "ws://localhost:8765" }],

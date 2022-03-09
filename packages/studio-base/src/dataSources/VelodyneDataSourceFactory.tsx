@@ -14,6 +14,7 @@ class VelodyneDataSourceFactory implements IDataSourceFactory {
   type: IDataSourceFactory["type"] = "connection";
   displayName = "Velodyne LIDAR";
   iconName: IDataSourceFactory["iconName"] = "GenericScan";
+  docsLink = "/velodyne";
 
   formConfig = {
     fields: [{ id: "url", label: "UDP Port", defaultValue: "2369" }],

@@ -2,7 +2,7 @@
 // License, v2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/
 
-import { ActionButton, TextField, useTheme } from "@fluentui/react";
+import { ActionButton, Link, TextField, useTheme } from "@fluentui/react";
 import { Stack } from "@mui/material";
 import { useState, useMemo, useCallback, useLayoutEffect } from "react";
 
@@ -124,6 +124,13 @@ export default function Connection(props: ConnectionProps): JSX.Element {
                     }}
                   />
                 ))}
+                {selectedSource.docsLink && (
+                  <Link
+                    href={`https://foxglove.dev/docs/studio/connection${selectedSource.docsLink}`}
+                  >
+                    View docs.
+                  </Link>
+                )}
               </Stack>
             </Stack>
           )}
