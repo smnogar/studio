@@ -65,6 +65,16 @@ const features: Feature[] = [
     name: "Legacy Plot panel",
     description: <>Enable the Legacy Plot panel.</>,
   },
+  {
+    key: AppSetting.EXPERIMENTAL_BAG_PLAYER,
+    name: "Experimental bag player",
+    description: (
+      <>
+        The experimental bag player uses a new method for backfilling when seeking to fetch previous
+        messages on subscribed topics. It also has a new approach for block preloading and playback.
+      </>
+    ),
+  },
 ];
 if (process.env.NODE_ENV === "development") {
   features.push({
