@@ -92,7 +92,7 @@ export class IterablePlayer implements Player {
 
   private _isPlaying: boolean = false;
   private _listener?: (playerState: PlayerState) => Promise<void>;
-  private _speed: number = 0.2;
+  private _speed: number = 1.0;
   private _start: Time = { sec: 0, nsec: 0 };
   private _end: Time = { sec: 0, nsec: 0 };
 
@@ -202,7 +202,6 @@ export class IterablePlayer implements Player {
     }
 
     await this._emitState();
-
     if (!this._hasError) {
       this._setState("start-delay");
     }
