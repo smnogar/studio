@@ -149,8 +149,8 @@ describe("IterablePlayer", () => {
     expect(messages).toEqual([
       // before initialize
       stateGen(),
-      // after initialize
-      stateGen({ presence: PlayerPresence.PRESENT }),
+      // start delay
+      stateGen({ presence: PlayerPresence.INITIALIZING }),
       // startPlay
       stateGen({ presence: PlayerPresence.PRESENT }),
       // idle

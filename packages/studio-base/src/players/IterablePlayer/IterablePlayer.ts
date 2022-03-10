@@ -278,6 +278,9 @@ export class IterablePlayer implements Player {
 
     const messages: MessageEvent<unknown>[] = [];
     for (const topic of topics) {
+      // NOTE: An iterator is made for each topic to get the latest message on that topic.
+      // An single iterator for all the topics could result in iterating through many
+      // irrelevant messages to get to an older message on a topic.
       const topicIterator = this._iterableSource.messageIterator({
         topics: [topic],
         start: targetTime,
