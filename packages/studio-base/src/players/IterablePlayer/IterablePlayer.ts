@@ -284,10 +284,9 @@ export class IterablePlayer implements Player {
         reverse: true,
       });
       for await (const iterResult of topicIterator) {
-        // A new state request during backfill, cancel the backfill to service the new state
-        if (this._nextState) {
-          return;
-        }
+        // NOTE: Even if _nextState is set, we finish the backfill
+        // This is to support continuous scrubbing. As the user scrubbs, we
+        // continue to backfill and emit state so they can see updates as they scrub.
 
         if (iterResult.problem) {
           this._problemManager.addProblem(`connid-${iterResult.connectionId}`, iterResult.problem);
