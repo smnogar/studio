@@ -32,6 +32,7 @@ import { HitmapRenderContext } from "./HitmapRenderContext";
 import PinholeCameraModel from "./PinholeCameraModel";
 import {
   decodeYUV,
+  decodeNV21,
   decodeRGB8,
   decodeBGR8,
   decodeFloat1c,
@@ -135,6 +136,9 @@ function decodeMessageToBitmap(
       switch (encoding) {
         case "yuv422":
           decodeYUV(rawData as unknown as Int8Array, width, height, image.data);
+          break;
+        case "nv21":
+          decodeNV21(rawData as unknown as Int8Array, width, height, image.data);
           break;
         case "rgb8":
           decodeRGB8(rawData, width, height, image.data);

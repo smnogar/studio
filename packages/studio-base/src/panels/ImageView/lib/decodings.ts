@@ -47,6 +47,31 @@ export function decodeYUV(
   }
 }
 
+export function decodeNV21(
+  yuv: Int8Array,
+  width: number,
+  height: number,
+  output: Uint8ClampedArray,
+): void {
+  let c = 0;
+  let off = 0;
+
+  const max = height * width;
+  for (let r = 0; r < max; r++) {
+
+    const row = (r)/width; // full res row
+    const col = (r)%width; // full res row
+    const rc_ind = ((row/2)*(width/2)) + (col/2); // half res ind
+    const u_ind = max + (rc_ind*2) + 1;
+    const v_ind = max + (rc_ind*2);
+
+    // rgba
+    output[r*3]   = yuv[r]! + 1.370705*(yuv[v_ind]!-128);
+    output[r*3+1] = yuv[r]! + (-0.337633*(yuv[u_ind]!-128)) + (-0.698001*(yuv[v_ind]!-128))
+    output[r*3+2] = yuv[r]! + (1.732446*(yuv[u_ind]!-128)
+  }
+}
+
 export function decodeRGB8(
   rgb: Uint8Array,
   width: number,
