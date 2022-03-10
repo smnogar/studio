@@ -1,3 +1,4 @@
+/** @jest-environment jsdom */
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/
@@ -30,20 +31,7 @@ class TestSource implements IIterableSource {
 
   messageIterator(_args: MessageIteratorArgs): IMessageIterator {
     return {
-      async *[Symbol.asyncIterator](): AsyncIterator<Readonly<IteratorResult>> {
-        /*
-        yield {
-          connectionId: 0,
-          problem: undefined,
-          msgEvent: {
-            topic: "/topic",
-            receiveTime: { sec: 0, nsec: 0 },
-            sizeInBytes: 0,
-            message: {},
-          },
-        };
-        */
-      },
+      async *[Symbol.asyncIterator](): AsyncIterator<Readonly<IteratorResult>> {},
     };
   }
 }
