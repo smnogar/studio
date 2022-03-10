@@ -119,7 +119,7 @@ describe("IterablePlayer", () => {
     });
     const store = new PlayerStateStore(5);
     player.setListener(async (state) => await store.add(state));
-    const messages = await store.done;
+    const playerStates = await store.done;
 
     const stateGen = playerStateGenerator({
       activeData: {
@@ -146,7 +146,7 @@ describe("IterablePlayer", () => {
       name: undefined,
     });
 
-    expect(messages).toEqual([
+    expect(playerStates).toEqual([
       // before initialize
       stateGen(),
       // start delay

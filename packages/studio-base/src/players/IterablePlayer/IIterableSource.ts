@@ -38,8 +38,20 @@ export interface IMessageIterator {
   [Symbol.asyncIterator](): AsyncIterator<Readonly<IteratorResult>>;
 }
 
+/**
+ * IIterableSource specifies an interface initializing and accessing messages.
+ */
 export interface IIterableSource {
+  /**
+   * Initialize the source.
+   */
   initialize(): Promise<Initalization>;
 
+  /**
+   * Instantiate an IMessageIterator for the source.
+   *
+   * The iterator produces IteratorResults from the source. The IteratorResults should be
+   * in log time order.
+   */
   messageIterator(args: MessageIteratorArgs): IMessageIterator;
 }

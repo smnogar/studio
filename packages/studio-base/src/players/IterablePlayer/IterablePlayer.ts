@@ -41,7 +41,7 @@ import { IIterableSource, IMessageIterator } from "./IIterableSource";
 const log = Log.getLogger(__filename);
 
 // Number of bytes that we aim to keep in the cache.
-// Setting this to higher than 1.5GB caused the renderer process to crash on linux on certain bags.
+// Setting this to higher than 1.5GB caused the renderer process to crash on linux.
 // See: https://github.com/foxglove/studio/pull/1733
 const DEFAULT_CACHE_SIZE_BYTES = 1.0e9;
 
@@ -53,8 +53,8 @@ const SEEK_START_DELAY_MS = 100;
 const MIN_MEM_CACHE_BLOCK_SIZE_NS = 0.1e9;
 
 // Original comment from webviz:
-// Preloading algorithms slow when there are too many blocks. For very long bags, use longer
-// blocks. Adaptive block sizing is simpler than using a tree structure for immutable updates but
+// Preloading algorithms slow when there are too many blocks.
+// Adaptive block sizing is simpler than using a tree structure for immutable updates but
 // less flexible, so we may want to move away from a single-level block structure in the future.
 const MAX_BLOCKS = 400;
 
@@ -72,7 +72,7 @@ type IterablePlayerOptions = {
   isSampleDataSource?: boolean;
 };
 
-type BagPlayerState =
+type IterablePlayerState =
   | "preinit"
   | "initialize"
   | "start-delay"
@@ -81,13 +81,15 @@ type BagPlayerState =
   | "seek-backfill"
   | "play";
 
-// A `Player` that wraps around a tree of `RandomAccessDataProviders`.
+/**
+ * IterablePlayer implements the Player interface for IIterableSource instances.
+ */
 export class IterablePlayer implements Player {
   private _urlParams?: Record<string, string>;
   private _name?: string;
   private _filePath?: string;
-  private _nextState?: BagPlayerState;
-  private _state: BagPlayerState = "preinit";
+  private _nextState?: IterablePlayerState;
+  private _state: IterablePlayerState = "preinit";
   private _runningState: boolean = false;
 
   private _isPlaying: boolean = false;
@@ -198,7 +200,7 @@ export class IterablePlayer implements Player {
 
       this._blocks = Array.from({ length: blockCount });
     } catch (error) {
-      this._setError(`Error initializing bag: ${error.message}`, error);
+      this._setError(`Error initializing: ${error.message}`, error);
     }
 
     await this._emitState();
@@ -323,7 +325,7 @@ export class IterablePlayer implements Player {
     this._setState(this._isPlaying ? "play" : "idle");
   }
 
-  private _setState(newState: BagPlayerState) {
+  private _setState(newState: IterablePlayerState) {
     log.debug(`Next state: ${newState}`);
     this._nextState = newState;
     void this._runState();
@@ -784,7 +786,7 @@ export class IterablePlayer implements Player {
 
   seekPlayback(time: Time): void {
     // Seeking before initialization is complete is a no-op since we do not
-    // yet know the time range of the bag
+    // yet know the time range of the source
     if (this._state === "preinit" || this._state === "initialize") {
       return;
     }
